@@ -1,0 +1,194 @@
+# 游戏配置文件
+# 玩家配置
+player:
+  id: 1  # 1表示Player1（蓝方），2表示Player2（红方）
+
+# 路径点配置（Player1 - 蓝方）
+player1_waypoints:
+  - x: 15.9
+    y: -44.9
+    yaw: 0.0
+    pitch: 0.0
+    has_shoot_task: false  # P4 - 敌方前哨站
+  - x: 5.8
+    y: -44.9
+    yaw: 0.0
+    pitch: 0.0
+    has_shoot_task: false  # P5 - 补给站
+  - x: 5.8
+    y: -37.8
+    yaw: 0.0
+    pitch: 0.0
+    has_shoot_task: false  # P6 - 进攻点
+  - x: -27.7
+    y: -38.3
+    yaw: 243.0
+    pitch: -1.5
+    has_shoot_task: true   # 攻击5号敌人
+  - x: -27.2
+    y: -2.4
+    yaw: 89.5
+    pitch: 2.5
+    has_shoot_task: true   # 攻击4号敌人
+  - x: -2.5
+    y: -2.8
+    yaw: 58.7
+    pitch: 19.5
+    has_shoot_task: true   # 攻击前哨站
+  - x: -3.0
+    y: 32.0
+    yaw: 112.8
+    pitch: 8.0
+    has_shoot_task: true   # 敌方基地
+  - x: 6.8
+    y: 32.0
+    yaw: 48.5
+    pitch: 8.0
+    has_shoot_task: true   # 敌方基地
+  - x: 6.8
+    y: 47.5
+    yaw: 314.0
+    pitch: 8.0
+    has_shoot_task: true   # 敌方基地
+  - x: -6.0
+    y: 47.5
+    yaw: 221.0
+    pitch: 8.0
+    has_shoot_task: true   # P10 - 攻击基地
+  - x: -6.0
+    y: 32.0
+    yaw: 123.0
+    pitch: 8.0
+    has_shoot_task: true   # P11 - 攻击基地
+
+# 路径点配置（Player2 - 红方，坐标中心对称）
+player2_waypoints:
+  - x: -15.9
+    y: 44.9
+    yaw: 0.0
+    pitch: 0.0
+    has_shoot_task: false  # P4 - 敌方前哨站
+  - x: -5.8
+    y: 44.9
+    yaw: 0.0
+    pitch: 0.0
+    has_shoot_task: false  # P5 - 补给站
+  - x: -5.8
+    y: 37.8
+    yaw: 0.0
+    pitch: 0.0
+    has_shoot_task: false  # P6 - 进攻点
+  - x: 27.7
+    y: 38.3
+    yaw: 243.0
+    pitch: -1.5
+    has_shoot_task: true   # 攻击5号敌人
+  - x: 27.2
+    y: 2.4
+    yaw: 89.5
+    pitch: 2.5
+    has_shoot_task: true   # 攻击4号敌人
+  - x: 2.5
+    y: 2.8
+    yaw: 58.7
+    pitch: 19.5
+    has_shoot_task: true   # 攻击前哨站
+  - x: 3.0
+    y: -32.0
+    yaw: 112.8
+    pitch: 8.0
+    has_shoot_task: true   # 敌方基地
+  - x: -6.8
+    y: -32.0
+    yaw: 48.5
+    pitch: 8.0
+    has_shoot_task: true   # 敌方基地
+  - x: -6.8
+    y: -47.5
+    yaw: 314.0
+    pitch: 8.0
+    has_shoot_task: true   # 敌方基地
+  - x: 6.0
+    y: -47.5
+    yaw: 221.0
+    pitch: 8.0
+    has_shoot_task: true   # P10 - 攻击基地
+  - x: 6.0
+    y: -32.0
+    yaw: 123.0
+    pitch: 8.0
+    has_shoot_task: true   # P11 - 攻击基地
+
+# 血量变化阈值
+health_change_thresholds:
+  p4: -50   # P4路径点血量变化阈值
+  p5: 0     # P5路径点血量变化阈值
+  p6: -60   # P6路径点血量变化阈值
+  base: -120 # 基地血量变化阈值
+
+# 速度配置
+speed:
+  max_far: 10.0       # 远距离最大速度（地图单位/s）
+  max_near: 3.0       # 近距离最大速度（地图单位/s）
+  max_precise: 0.8    # 精确模式最大速度（地图单位/s）
+  switch_distance: 5.0         # 速度切换距离（地图单位）
+  switch_distance_fast: 10.0   # 快速模式速度切换距离
+  precise_mode_distance: 1.5   # 精确模式距离（地图单位）
+  arrival_threshold_fast: 2.0  # 快速到达阈值（地图单位）
+  arrival_threshold_normal: 0.8 # 普通到达阈值（地图单位）
+  precise_arrival_threshold: 0.2 # 精确调整到达阈值（地图单位）
+  precise_adjust_speed: 0.3    # 精确调整速度（地图单位/s）
+
+# 相机参数
+camera:
+  fx: 554.26   # 焦距X方向（像素）
+  fy: 554.26   # 焦距Y方向（像素）
+  cx: 320.0    # 主点X坐标（像素）
+  cy: 240.0    # 主点Y坐标（像素）
+
+# 装甲板参数
+armor:
+  width: 1.0     # 装甲板宽度（地图单位）
+  height: 0.625  # 装甲板高度（地图单位）
+
+# 弹道参数
+ballistics:
+  bullet_speed: 23.0  # 子弹速度（m/s）
+  gravity: 5.0        # 重力加速度（地图单位/s²）
+
+# 位置调整参数
+position_adjust:
+  hold_threshold: 0.05      # 位置保持阈值（地图单位）
+  adjust_interval: 1.0       # 位置调整间隔（秒）
+
+# 摆动参数
+swing:
+  range: 6.0        # 摆动范围（±度）
+  speed: 10.0       # 摆动速度（度/秒）
+
+# 检测失败参数
+detection_failure:
+  max_fail_count: 10  # 最大连续检测失败次数
+
+# 超时参数
+timeout:
+  move: 10.0            # 移动超时时间（秒）
+  health_history: 5.0   # 血量历史保存时间（秒）
+  other_data: 10.0      # 其他数据保存时间（秒）
+
+# 射击阈值
+threshold:
+  consecutive_miss_disable: 10  # 禁用自瞄的连续未命中阈值
+  consecutive_miss_swing: 3     # 开始摆动的连续未命中阈值
+  hit: -10                       # 血量减少阈值（HP）
+
+# 滤波器参数
+filter:
+  distance_window: 5    # 距离滤波窗口大小
+  yaw_alpha: 0.1          # yaw滤波系数（0-1）
+  pitch_alpha: 0.1        # pitch滤波系数（0-1）
+
+# 单位换算
+unit:
+  map_unit_to_meter: 0.2   # 1地图单位 = 0.2m
+  meter_to_map_unit: 5.0    # 1m = 5地图单位
