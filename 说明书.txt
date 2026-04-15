@@ -539,22 +539,19 @@
 │           ├── path_strategy.h      # 路径策略头文件
 │           ├── path_strategy.cpp    # 路径策略实现
 │           ├── performance_monitor.h # 性能监控器头文件
-│           └── go_d2c2.cpp          # D2C2两分类版本实现文件（1900行）
+│           └── go_d2c2.cpp          # D2C2两分类版本实现文件（2330行）
 ├── tdt_interface/                   # 自定义消息接口包
 │   ├── CMakeLists.txt
 │   ├── package.xml
 │   └── msg/
 │       ├── SendData.msg             # 发送数据消息（角度+射击指令）
 │       └── ReceiveData.msg          # 接收数据消息（实时角度）
-├── build/                           # 编译输出目录
-├── install/                         # 安装目录
-├── log/                             # 日志目录
 ├── models/                          # 深度学习模型
 │   └── centernet_r18d2c2_fp16.engine # TensorRT 模型文件(D2C2两分类版本,推荐)
 ├── D2C2/                            # D2C2模型训练和推理项目
 │   ├── train/                       # 训练库
 │   │   ├── train_2class.py        # 训练脚本
-│   │   ├── requirements_train.txt # Python依赖
+│   │   ├── requirements_train.txt # Python依赖（已更新至最新版本）
 │   │   └── models/                # 训练输出(checkpoints, ONNX)
 │   ├── inference/                   # 推理库
 │   │   └── centernet_r18d2c2_fp16.engine  # TensorRT引擎
@@ -1062,11 +1059,11 @@ ROS2话题发布：
 • gameTimeCallback() - 游戏时间回调
 
 主要控制循环：
-• controlLoop() - 主控制循环（导航和状态切换）
+• controlLoop() - 主控制循环（导航和状态切换,5ms周期）
 • shootLoop() - 射击循环（自瞄计算,30ms周期）
-• swingLoop() - 摆动循环（角度更新和射击发布,1ms周期）
-• healthCheckLoop() - 血量检测循环（战术决策）
-• positionAdjustLoop() - 位置调整循环（位置保持）
+• swingLoop() - 摆动循环（角度更新和射击发布,20ms周期）
+• healthCheckLoop() - 血量检测循环（战术决策,1000ms周期）
+• positionAdjustLoop() - 位置调整循环（位置保持,50ms周期）
 
 新增模块集成：
 • ConfigManager - 加载YAML配置
@@ -1815,7 +1812,7 @@ colcon build
     |<--target_speed_player_X--------| 发布（200Hz）
     |                                | 控制机器人移动
     |                                |
-    |<--target_angles_player_X-------| 发布（1000Hz）
+    |<--target_angles_player_X-------| 发布（50Hz）
     |                                | 控制云台和射击
 ```
 
@@ -2303,8 +2300,8 @@ yaw(t) = base_yaw + swing_direction × swing_speed × t
 ----------------_
 • 摆动范围：±6度
 • 摆动速度：10度/秒
-• 更新频率：1000Hz（1ms）
-• 单次更新：10 × 0.001 = 0.01度
+• 更新频率：50Hz（20ms）
+• 单次更新：10 × 0.02 = 0.2度
 
 6.8.3 摆动停止条件
 ----------------_
@@ -2738,8 +2735,8 @@ patience = 15  # Early stopping耐心值
 ```cpp
 // 在 GoNode 构造函数中
 control_timer_ = create_wall_timer(milliseconds(5), ...)     // 5ms - 主控制循环
-shoot_timer_ = create_wall_timer(milliseconds(30), ...)     // 30ms - 射击循环(已修改)
-swing_timer_ = create_wall_timer(milliseconds(1), ...)      // 1ms - 摆动循环
+shoot_timer_ = create_wall_timer(milliseconds(30), ...)     // 30ms - 射击循环
+swing_timer_ = create_wall_timer(milliseconds(20), ...)     // 20ms - 摆动循环
 health_check_timer_ = create_wall_timer(milliseconds(1000), ...) // 1000ms - 血量检测
 position_adjust_timer_ = create_wall_timer(milliseconds(50), ...)  // 50ms - 位置调整
 ```
@@ -2849,7 +2846,24 @@ D2C2训练依赖：
 
 8.5 版本历史
 -----------------
-v6.0 (2026-04-13)
+v6.0 (2026-04-15)
+• 系统可靠性增强：
+  - 添加TensorRT初始化异常处理（模型文件检查、引擎反序列化错误捕获）
+  - 添加CUDA内存分配异常处理（cudaMalloc错误检测和日志）
+  - 使用std::atomic保护血量数据，避免数据竞争
+  - 栈式管理被攻击状态（std::stack替代单个变量，保留历史）
+• 日志系统完善：
+  - 添加状态转换日志（MOVING ↔ SHOOTING详细记录）
+  - 添加关键操作日志（目标检测、射击命令、导航移动）
+  - 添加异常警告日志（超时、卡死、配置错误）
+• 配置管理增强：
+  - 添加validateConfig函数，启动时验证参数合理性
+  - 添加配置文件存在性检查
+  - 添加参数范围验证（速度、阈值、滤波系数等）
+• 监控机制：
+  - 添加看门狗机制监控控制循环（100ms超时检测）
+  - 添加看门狗机制监控射击循环（100ms超时检测）
+  - 添加互斥锁保护看门狗数据
 • ConfigManager完全集成到所有核心类（GoNode、ShootController、PathNavigator、CenterNetDetector、DataManager）
 • 删除所有硬编码常量定义（44行僵尸代码）
 • 所有参数通过YAML配置文件管理，支持热更新
@@ -2897,7 +2911,7 @@ v4.0 (2026-02-22)
 • 将视觉检测从 OpenCV 灯条检测升级为 TensorRT 深度学习
 • 添加移动平均和指数平滑滤波器,减少角度抖动
 • 修复运动预测返回 (0,0) 导致的突然跳变问题
-• 修改 shoot_timer 从 1ms 改为 30ms,减少无效调用
+• 设置 shoot_timer 为 30ms周期,与相机帧率匹配,减少无效调用
 • 统一相机焦距 Fx=Fy=554.26
 • 更新弹道参数（子弹速度23m/s,重力5地图单位/s²）
 • 更新识别类别（red类/blue类 + red_armor/blue_armor）
