@@ -1,0 +1,75 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Setup ROS2 Humble
+        uses: ros-tooling/setup-ros@v0.7
+        with:
+          required-ros-distributions: humble
+
+      - name: Install ROS dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            ros-humble-cv-bridge \
+            ros-humble-geometry-msgs \
+            ros-humble-sensor-msgs \
+            ros-humble-ament-index-cpp \
+            python3-colcon-common-extensions
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get install -y \
+            libopencv-dev \
+            libyaml-cpp-dev \
+            libcurl4-openssl-dev
+
+      - name: Setup NVIDIA apt repository
+        run: |
+          wget -q https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2204/x86_64/cuda-keyring_1.1-1_all.deb
+          sudo dpkg -i cuda-keyring_1.1-1_all.deb
+          sudo apt-get update
+
+      - name: Install CUDA Toolkit 12.4
+        run: |
+          sudo apt-get install -y cuda-toolkit-12-4
+
+      - name: Install TensorRT 10
+        # 版本由 NVIDIA apt 仓库提供的最新 10.x 决定
+        run: |
+          sudo apt-get install -y libnvinfer-dev libnvinfer10
+
+      - name: Build with colcon
+        run: |
+          source /opt/ros/humble/setup.bash
+          colcon build --packages-select tdt_interface go --cmake-args -DBUILD_TESTING=ON
+
+      - name: Run unit tests
+        run: |
+          source /opt/ros/humble/setup.bash
+          source install/setup.bash
+          colcon test --packages-select go
+          colcon test-result --all --verbose
+
+      - name: Generate coverage report
+        run: |
+          sudo apt-get install -y gcovr
+          source /opt/ros/humble/setup.bash
+          colcon build --packages-select go --cmake-args \
+            -DBUILD_TESTING=ON \
+            -DCMAKE_CXX_FLAGS="--coverage -O0 -g"
+          source install/setup.bash
+          colcon test --packages-select go
+          gcovr --root src/go/src --filter "src/go/src" \
+            --xml coverage.xml --html coverage.html
+          echo "Coverage report saved to coverage.html / coverage.xml"

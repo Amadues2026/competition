@@ -1,0 +1,267 @@
+# 游戏配置文件
+# 玩家配置
+player:
+  id: 1  # 1表示Player1（蓝方），2表示Player2（红方）
+
+# 路径点配置（Player1 - 蓝方）
+player1_waypoints:
+  - x: 15.9
+    y: -44.9
+    yaw: 0.0
+    pitch: 0.0
+    has_shoot_task: false  # P1 - 出发点
+  - x: 5.8
+    y: -44.9
+    yaw: 0.0
+    pitch: 0.0
+    has_shoot_task: false  # P2 - 向中部移动
+  - x: 5.8
+    y: -37.8
+    yaw: 0.0
+    pitch: 0.0
+    has_shoot_task: false  # P3 - 接近中部
+  - x: -27.7
+    y: -38.3
+    yaw: 243.0
+    pitch: -1.5
+    has_shoot_task: true   # 攻击5号敌人
+  - x: -27.2
+    y: -2.4
+    yaw: 89.5
+    pitch: 2.5
+    has_shoot_task: true   # 攻击4号敌人
+  - x: -2.5
+    y: -2.8
+    yaw: 58.7
+    pitch: 19.5
+    has_shoot_task: true   # 攻击前哨站
+  - x: -3.0
+    y: 32.0
+    yaw: 112.8
+    pitch: 8.0
+    has_shoot_task: true   # 敌方基地
+  - x: 6.8
+    y: 32.0
+    yaw: 48.5
+    pitch: 8.0
+    has_shoot_task: true   # 敌方基地
+  - x: 6.8
+    y: 47.5
+    yaw: 314.0
+    pitch: 8.0
+    has_shoot_task: true   # 敌方基地
+  - x: -6.0
+    y: 47.5
+    yaw: 221.0
+    pitch: 8.0
+    has_shoot_task: true   # P10 - 攻击基地
+  - x: -6.0
+    y: 32.0
+    yaw: 123.0
+    pitch: 8.0
+    has_shoot_task: true   # P11 - 攻击基地
+
+# 路径点配置（Player2 - 红方，坐标中心对称）
+player2_waypoints:
+  - x: -15.9
+    y: 44.9
+    yaw: 0.0
+    pitch: 0.0
+    has_shoot_task: false  # P1 - 出发点
+  - x: -5.8
+    y: 44.9
+    yaw: 0.0
+    pitch: 0.0
+    has_shoot_task: false  # P2 - 向中部移动
+  - x: -5.8
+    y: 37.8
+    yaw: 0.0
+    pitch: 0.0
+    has_shoot_task: false  # P3 - 接近中部
+  - x: 27.7
+    y: 38.3
+    yaw: 243.0
+    pitch: -1.5
+    has_shoot_task: true   # 攻击5号敌人
+  - x: 27.2
+    y: 2.4
+    yaw: 89.5
+    pitch: 2.5
+    has_shoot_task: true   # 攻击4号敌人
+  - x: 2.5
+    y: 2.8
+    yaw: 58.7
+    pitch: 19.5
+    has_shoot_task: true   # 攻击前哨站
+  - x: 3.0
+    y: -32.0
+    yaw: 112.8
+    pitch: 8.0
+    has_shoot_task: true   # 敌方基地
+  - x: -6.8
+    y: -32.0
+    yaw: 48.5
+    pitch: 8.0
+    has_shoot_task: true   # 敌方基地
+  - x: -6.8
+    y: -47.5
+    yaw: 314.0
+    pitch: 8.0
+    has_shoot_task: true   # 敌方基地
+  - x: 6.0
+    y: -47.5
+    yaw: 221.0
+    pitch: 8.0
+    has_shoot_task: true   # P10 - 攻击基地
+  - x: 6.0
+    y: -32.0
+    yaw: 123.0
+    pitch: 8.0
+    has_shoot_task: true   # P11 - 攻击基地
+
+# 血量变化阈值
+health_change_thresholds:
+  p4: -50   # P4路径点血量变化阈值
+  p5: 0     # P5路径点血量变化阈值
+  p6: -60   # P6路径点血量变化阈值
+  base: -120 # 基地血量变化阈值
+
+# 速度配置
+speed:
+  max_far: 10.0       # 远距离最大速度（地图单位/s）
+  max_near: 3.0       # 近距离最大速度（地图单位/s）
+  switch_distance: 5.0         # 速度切换距离（地图单位）
+  switch_distance_fast: 10.0   # 快速模式速度切换距离
+  precise_mode_distance: 1.5   # 精确模式距离（地图单位）
+  arrival_threshold_fast: 2.0  # 快速到达阈值（地图单位）
+  arrival_threshold_normal: 0.8 # 普通到达阈值（地图单位）
+  precise_arrival_threshold: 0.2 # 精确调整到达阈值（地图单位）
+  precise_adjust_speed: 0.3    # 精确调整速度（地图单位/s）
+
+# 相机参数
+camera:
+  fx: 554.26   # 焦距X方向（像素）
+  fy: 554.26   # 焦距Y方向（像素）
+  cx: 320.0    # 主点X坐标（像素）
+  cy: 240.0    # 主点Y坐标（像素）
+
+# 装甲板参数
+armor:
+  width: 1.0     # 装甲板宽度（地图单位）
+  height: 0.625  # 装甲板高度（地图单位）
+
+# 弹道参数
+ballistics:
+  bullet_speed: 23.0  # 子弹速度（m/s）
+  gravity: 5.0        # 重力加速度（地图单位/s²）
+
+# 位置调整参数
+position_adjust:
+  hold_threshold: 0.05      # 位置保持阈值（地图单位）
+  adjust_interval: 1.0       # 位置调整间隔（秒）
+
+# 摆动参数
+swing:
+  range: 6.0        # 摆动范围（±度）
+  speed: 10.0       # 摆动速度（度/秒）
+
+# 检测失败参数
+detection_failure:
+  max_fail_count: 10  # 最大连续检测失败次数
+
+# 超时参数
+timeout:
+  move: 10.0            # 移动超时时间（秒）
+  health_history: 5.0   # 血量历史保存时间（秒）
+  other_data: 10.0      # 其他数据保存时间（秒）
+
+# 射击阈值
+threshold:
+  consecutive_miss_disable: 10  # 禁用自瞄的连续未命中阈值
+  consecutive_miss_swing: 3     # 开始摆动的连续未命中阈值
+
+# 距离门控参数
+distance_gate:
+  default_detection_distance: 3.5  # 默认检测距离（无检测时使用）
+  gate_max: 30.0                   # 距离门控上限（超过此值丢弃）
+  gate_acceptance: 10.0            # 帧间距离跳变容忍度（超过此值视为无效跳变）
+
+# 滤波器参数
+filter:
+  distance_window: 150   # 距离滤波窗口大小（中值滤波）
+
+# 单位换算
+unit:
+  meter_to_map_unit: 5.0    # 1m = 5地图单位
+
+# EKF 滤波器参数
+ekf:
+  q_yaw: 0.01           # 偏航角过程噪声
+  q_pitch: 0.01         # 俯仰角过程噪声
+  q_distance: 0.5       # 距离过程噪声
+  r_yaw: 0.004          # 偏航角测量噪声
+  r_pitch: 0.004        # 俯仰角测量噪声
+  r_distance_denom: 200.0  # 距离自适应噪声分母
+  r_distance_base: 0.09    # 距离自适应噪声基值
+  p0_yaw: 0.01          # 初始协方差 - 偏航
+  p0_pitch: 0.01        # 初始协方差 - 俯仰
+  p0_distance: 0.1      # 初始协方差 - 距离
+  p_reset: 1000.0       # 重置时协方差倍率
+  q_adaptive_alpha: 0.0  # 自适应Q系数（0=禁用，按归一化 innovation 缩放）
+  q_adaptive_max_scale: 10.0  # 自适应Q最大倍率，防止异常观测导致Q无限增大
+
+# NIS 卡方检验参数
+nis:
+  chi2_upper: 7.815     # NIS 上界（自由度3，95%分位），超过视为模型失配
+  window: 100           # NIS 失败率滑动窗口大小
+
+# 跟踪状态机参数
+tracking:
+  min_detect_count: 3       # DETECTING→TRACKING所需最少连续检测帧数
+  max_temp_lost_count: 15   # TEMP_LOST下允许的最大未检测帧数
+  nis_failure_max: 0.3      # NIS 失败率阈值
+
+# 检测参数
+detection:
+  conf_threshold: 0.1       # YOLO 置信度阈值
+  nms_iou_threshold: 0.45   # NMS IoU 阈值
+  enable_visualization: true   # 是否启用 GUI 显示窗口（无头服务器建议关闭）
+
+# 定时器间隔（毫秒）
+timer:
+  control: 5           # 运动控制（ms）
+  shoot: 30            # 自瞄检测（ms）
+  health_check: 1000   # 血量监控（ms）
+  swing: 20            # 摆动+射击（ms）
+  visualization: 67    # GUI 刷新间隔（ms，约15FPS，独立线程）
+
+# 漂移检测参数
+drift:
+  threshold_multiplier: 2.0  # 漂移判定 = arrival_threshold × 此值
+  timeout: 5.0               # 漂移超时（秒）
+
+# 目标锁定加速倍率
+lock:
+  speed_multiplier: 2.0  # 锁定时变速/精调区间扩大倍率
+
+# 数据管理器参数
+data:
+  max_reasonable_health_change: 500  # 单次血量变化上限（过滤异常）
+  health_history_tolerance: 0.1      # 血量历史窗口容差（秒）
+  max_health_changes: 10             # 血量变化记录最大条数
+  yaw_pitch_lookback: 1.0            # 云台角度回溯时间（秒）
+
+# 导航器参数
+navigator:
+  max_retry_count: 3     # 卡住重试次数上限
+
+# 战斗参数
+combat:
+  ekf_default_dt: 0.03   # EKF 默认时间间隔（秒）
+  ekf_max_dt: 0.5        # EKF 最大时间间隔（秒）
+  debug_log_interval: 30  # 调试日志打印间隔（帧数）
+
+# 路点工具参数
+waypoint:
+  health_ratio_escape: 0.2       # 血量比例逃逸阈值
+  health_change_fallback: 50     # 血量变化阈值回退值

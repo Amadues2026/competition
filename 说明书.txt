@@ -1,0 +1,1436 @@
+# T-DT 校园战机器人自主控制系统完整说明书
+# 项目：机器人竞赛自主导航与射击控制系统
+
+============================================================================================================================================================
+
+================================================================================
+第零部分：开发者必读 - 项目深度理解
+================================================================================
+
+警告：在修改任何代码之前，必须完整阅读本章节。本章节解释了项目的设计决策、架构哲学和关键设计模式，理解这些才能避免引入bug。
+
+0.1 核心设计哲学
+-----------------
+
+**0.1.1 配置优先于代码**
+- 原因：参数需要频繁调整，编译太慢
+- 实施：所有可调参数都通过YAML配置
+- 例外：物理常量（装甲板尺寸）、系统设计常量（重试次数）保留在代码中
+- 禁止：在代码中硬编码可调参数（如速度、阈值等）
+
+**0.1.2 后备机制优先于简化**
+- 原因：配置文件可能丢失或损坏，系统必须能运行
+- 实施：YAML有默认值，代码有后备常量
+- 优先级：YAML > 代码默认值 > 代码后备常量
+- 禁止：删除代码中的后备常量
+
+**0.1.3 模块化优先于单体**
+- 原因：从 890 行单体 go_d2c2.cpp 拆分为独立模块 + 7 个测试文件，职责单一、可测试
+- 实施：每个 Controller 类职责单一，通过 SharedContext 交换数据
+- 禁止：绕开 SharedContext 直接操作其他 Controller 的内部状态
+- 本次清理：删除 2 个零引用模块（IMMTracker、MovingAverageFilter）+ 2 个测试，
+  提取 TrackingStateMachine → 独立文件，共 19 源文件 + 5 测试
+- cached_armors_ private + getCachedArmors，waypoints_ 值拷贝，
+  WithMutex<T>类型封装，target_yaw/pitch atomic，预计算PnP常量，预分配输入缓冲区，
+  距离门限YAML可配，CI CUDA 12.4固定+coverage报告，22+3项P2/P3优化
+
+**0.1.4 性能优先于抽象**
+- 原因：机器人控制需要实时响应
+- 实施：关键路径使用原生类型，避免不必要的封装
+- 禁止：在热路径中使用虚函数或动态分配
+
+**0.1.5 注释说 WHY 不说 WHAT**
+- 原因：代码本身说明"做了什么"，注释需要说"为什么这么做"
+- 实施：每条注释解释设计决策、坑点、算法选择理由
+- 禁止：写"设置速度为 X"这种废话注释
+
+0.2 关键架构决策
+-----------------
+
+**0.2.1 为什么拆成 3 个 Controller 而不是 1 个 go_node？**
+- 原 go_node.cpp（相关代码段）包含导航、视觉、血量评估五种耦合逻辑
+- 拆分为 MovementController（导航+漂移）+ CombatManager（视觉+摆动）+ StateManager（血量评估）
+- 三个 Controller 通过 SharedContext 交换 state/current_yaw/is_under_attack 等状态
+- 好处：每个 Controller 可以在自己的定时器周期独立运行，互不阻塞
+
+**0.2.2 为什么用 SharedContext 而不是直接调用别的模块？**
+- 5 个定时器通过 MultiThreadedExecutor(2) 在 2 个线程中调度执行（control_timer_ 独占回调组，其余 4 个定时器 + 5 个订阅共享另一组），直接调用会导致死锁
+- SharedContext 用 WithMutex<T> 封装 chassis/gimbal，显式 lock(ctx_.chassis.mutex) 访问 chassis.value.state 等字段；target_yaw/target_pitch 使用 std::atomic<double>
+- 数据流：controlLoop 读 state 决定是否发速度指令，shootLoop 写 current_yaw，swingLoop 发最终角度
+- 规范：持锁期间不能调用其他模块的方法（可能触发锁反转）
+
+**0.2.3 为什么有 5 个定时器而不是 1 个？**
+- control_timer（5ms）：移动控制，需要高频响应
+- shoot_timer（30ms）：YOLO 推理，对齐相机帧率 33FPS
+- swing_timer（20ms）：云台摆动平滑，50Hz 比 33Hz 流畅
+- health_check_timer（1s）：血量话题 10Hz，1 秒评估一次足够
+- position_adjust_timer（1s）：射击中位置微调，不需要太频繁
+- 禁止：合并定时器或随意改变频率（5ms 改 10ms 会导致移动卡顿）
+- 线程调度：5 定时器通过 MultiThreadedExecutor(2) 在 2 个工作线程中调度，control_timer_ 独占 control_cb_group_，其余 4 定时器 + 5 订阅共享 other_cb_group_
+
+**0.2.4 为什么用 3 态 EKF（随机游走）代替 IMM？**
+- 原 IMM（CV+CA 双模型）约 113 行，实测旋转目标跟踪时抖动约 30%
+- 回退到同济原始 3 态 EKF（yaw/pitch/dist 随机游走），代码仅 50 行
+- 自适应 R 噪声匹配 PnP 观测特性：dist 噪声随距离对数增长
+- 自适应 Q：按 sqrt(NIS/3) 缩放并限制最大倍率，避免角度/距离量纲混合
+- 角度残差限幅（atan2 wrap）避免 ±π 跳变
+
+**0.2.5 为什么血量变化阈值是负数？**
+- health_change = current_health - initial_health（血量减少为负数）
+- 阈值 -50 表示"血量减少超过 50 才算命中"
+- P5 阈值 0：该位置的 4 号敌人可能是步兵，血量少，-1 也算命中
+- 基地阈值 -150：基地血量 600，需要更大变化才能排除噪声
+
+**0.2.6 为什么 getEnemyIndex 不用 kBaseWaypointStart？**
+- kBaseWaypointStart = 4（P5），但基地区域（P7-P11）从索引 6 开始
+- 历史上该常量被误用在两个含义上（"第一个射击位"和"基地区域起点"）
+- 拆解后用 case 6: 避免与 case 4: 的编译器冲突，同时逻辑正确
+- 现在 getEnemyIndex 直接返回内部索引（0-5），调用方无需再调 healthTopicIndexToInternalIndex 转换
+
+0.3 修改代码的正确方式
+-----------------
+
+**0.3.1 添加新配置参数**
+1. 在 config/game_config.yaml 中添加配置
+2. 在 config_manager.h 中添加对应结构体
+3. 在 config_manager.cpp 中添加 parse 方法
+4. 在 runtime_config.h 中添加成员变量（含默认值）
+5. 在 GoNode::loadConfigParameters 中读取配置
+6. 在使用的 Controller 中从 config_ 读取（非 ctx_）
+7. 编译测试
+
+**0.3.2 修改现有配置参数**
+1. 直接修改 config/game_config.yaml
+2. 重新编译（可选，仅验证）
+3. 运行测试
+4. 禁止：修改代码中的默认值或后备值
+
+**0.3.3 添加新的定时器**
+1. 在 GoNode 中添加成员变量（SharedPtr）
+2. 在构造函数中创建定时器
+3. 在对应的 Controller 中实现回调
+4. 禁止：阻塞定时器回调
+
+**0.3.4 修改定时器回调逻辑**
+1. 先理解当前逻辑（阅读完整函数注释）
+2. 识别关键变量和竞态条件
+3. 修改时保持状态一致性
+4. 禁止：在回调中持锁调用其他模块
+
+**0.3.5 添加新的类**
+1. 设计接口
+2. 在 GoNode 中添加成员变量（shared_ptr/unique_ptr）
+3. 在构造函数中创建实例，传入需要的引用和模块专用配置值对象
+4. 在对应的定时器回调中委托调用
+
+**0.3.6 修改核心算法（滤波、弹道补偿等）**
+1. 先理解算法原理（查看注释和相关文档）
+2. 识别参数依赖（由 GoNode 从 YAML 组装后注入）
+3. 修改时保持数学正确性
+4. 禁止：修改算法时不考虑性能影响
+
+**0.3.7 修改 ROS2 话题**
+1. 检查现有订阅/发布者
+2. 确保 QoS 配置正确
+3. 测试通信可靠性
+4. 禁止：修改话题名称（会破坏系统）
+
+**0.3.8 修改 TensorRT 模型**
+1. 确保输入输出尺寸匹配
+2. 更新相关参数（input_h_、output_w_ 等）
+3. 测试推理性能
+4. 禁止：使用未经训练的模型
+
+0.4 常见陷阱与错误模式
+-----------------
+
+**0.4.1 SharedContext 使用陷阱**
+❌ 错误：持锁时调用其他模块的方法
+✅ 正确：先把值读到局部变量，释放锁，再调用
+原因：A 持 ctx.mutex 调用 B，B 也持 ctx.mutex → 死锁
+
+❌ 错误：在多个定时器中不加锁读写 ctx_.state
+✅ 正确：用 std::lock_guard<std::mutex> lock(ctx_.mutex) 保护
+原因：state 被 controlLoop 和 healthCheckLoop 同时读写
+
+**0.4.2 定时器陷阱**
+❌ 错误：在回调中使用阻塞操作（sleep、文件 IO）
+✅ 正确：使用异步操作或快速返回
+原因：阻塞会阻塞整个定时器线程
+
+❌ 错误：修改定时器频率（如从 5ms 改为 10ms）
+✅ 正确：保持现有频率，如需优化使用异步任务
+原因：定时器频率经过性能调优，改变会导致系统失稳
+
+**0.4.3 EKF 滤波器陷阱**
+❌ 错误：随意修改 EKF 的 Q/R 噪声矩阵
+✅ 正确：通过实测验证后再调整
+原因：q_yaw=0.01/q_pitch=0.01/q_dist=0.5 是同济实测值，R 随距离自适应，Q 可选自适应缩放
+
+❌ 错误：在滤波器未初始化时使用
+✅ 正确：首次调用 update 会初始化状态
+原因：未初始化的滤波器返回无效值
+
+❌ 错误：忽略角度卷绕（yaw ±π 跳变）
+✅ 正确：使用 atan2(sin, cos) 限幅残差
+原因：yaw 从 +179° 变到 -179° 时残差应=2° 而非 -358°
+
+**0.4.4 状态机陷阱**
+❌ 错误：状态转换时忘记重置相关变量
+✅ 正确：状态转换时重置所有相关状态
+原因：状态残留导致异常行为
+
+❌ 错误：直接修改 ctx_.state 而不是通过 Controller 逻辑
+✅ 正确：让 MovementController/StateManager 管理状态转换
+原因：直接修改会绕过前置检查
+
+**0.4.5 内存管理陷阱**
+❌ 错误：使用裸指针管理资源
+✅ 正确：使用 std::unique_ptr 或 std::shared_ptr
+原因：裸指针容易内存泄漏
+
+**0.4.6 性能陷阱**
+❌ 错误：在热路径中使用虚函数
+✅ 正确：使用模板或内联函数
+原因：虚函数有额外开销
+
+**0.4.7 多线程陷阱**
+❌ 错误：在多个定时器回调中访问共享变量而不加锁
+✅ 正确：使用原子变量或互斥锁
+原因：数据竞争导致不可预测行为
+
+**0.4.8 编码陷阱**
+❌ 错误：使用魔法数字
+✅ 正确：使用命名常量或由 GoNode 注入的已验证配置值
+原因：魔法数字难以维护和理解
+
+❌ 错误：不检查返回值（如文件打开、解析结果）
+✅ 正确：检查所有可能的错误情况
+原因：忽略错误会导致难以调试的问题
+
+0.5 项目核心文件导航
+-----------------
+
+**0.5.1 程序入口 — go_d2c2.cpp（相关代码段）**
+main: 初始化 ROS2, 创建 GoNode, spin。
+是惟一的可执行目标（CMakeLists → S_d2c2）。
+支持两个命令行参数：player_id（必选），test_waypoint_idx（可选单点测试模式）。
+
+**0.5.2 架构入口 — go_node.h/cpp（相关代码段）**
+薄胶水层：创建子模块、订阅话题、启动 5 个定时器、委托到 3 个 Controller。
+是唯一继承 rclcpp::Node 的类。
+
+**0.5.3 共享状态 — shared_context.h（相关代码段）**
+三个 Controller 的运行时数据交换中心。
+标注了每个字段的读写方、竞态保护规则（mutex 保护 state/current_yaw/等）。
+检测状态字段（detection_fail_count/last_accepted_distance/apply_distance_gate）已升级为 std::atomic，跨线程安全无需 mutex。
+
+**0.5.4 只读配置 — runtime_config.h（相关代码段）**
+所有 YAML 运行时参数的聚集结构体。
+GoNode 初始化时填充，通过 const& 注入 Controller，运行时不会修改。
+
+**0.5.5 游戏规则 — waypoint_utils.h/cpp（相关代码段）**
+纯函数集：血量话题索引映射（topic → internal）、航点→敌人映射（getEnemyIndex 直接返回内部索引 0-5，无需二次转换）、血量变化阈值。
+所有 kNumEnemies/kFastWaypointCount 等比赛规则常量在此。
+
+**0.5.6 运动控制 — movement_controller.h/cpp（相关代码段）**
+controlLoop（5ms 周期）：目标航点导航、分级调速、超时重试、射击漂移检测。
+positionAdjustLoop（1s 周期）：射击中位置微调。
+
+**0.5.7 视觉战斗 — combat_manager.h/cpp（相关代码段）**
+shootLoop（30ms 周期）：YOLO 推理 → YAML可配距离门限 → 3态EKF跟踪 → 弹道补偿。
+合并相邻锁作用域；合并SWING/AUTO重复分支；移除dead成员 last_ekf_yaw_/pitch_/distance_。
+
+**0.5.8 血量评估 — state_manager.h/cpp（相关代码段）**
+healthCheckLoop（1s 周期）：血量变化评估 → 自瞄降级/摆动决策 → 被攻击回撤 → 击杀前进。
+getEnemyIndex 直接返回内部索引，无需再调 healthTopicIndexToInternalIndex。
+
+**0.5.9 3 态 EKF 跟踪器 — target_ekf.h/cpp（相关代码段）**
+3 态随机游走 EKF（yaw/pitch/dist 球坐标），直接移植自同济视觉方案。
+自适应观测噪声 R（dist 相关），自适应过程噪声 Q（创新量缩放），角度残差 atan2 限幅防跳变。
+线性预测（F=I）+ 非线性更新（残差限幅），NIS 滑动窗口失效率监控。
+
+**0.5.10 数据管理 — data_manager.h/cpp（相关代码段）**
+时间窗口数据库：血量/位置/角度历史 deque，按配置时长自动裁剪。
+health_change 计算 = 当前值 - 5 秒前的值（窗口越大抗噪声越好，但反应越慢）。
+
+**0.5.11 射击状态机 — shoot_controller.h/cpp（相关代码段）**
+自瞄(AUTO) → 连续 miss → 硬编码(HARDCODE) → 继续 miss → 摆动(SWING)。
+enum class AimMode 代替两个 bool 防止非法组合。
+通过 ShootControllerConfig 接收参数，不依赖 YAML 解析器。
+
+**0.5.12 路径导航 — path_navigator.h/cpp（相关代码段）**
+P1-P11 顺序遍历，P4 起所有航点均为射击位（P1-P3 快速通过），P6 后进入 P7-P11 无限循环（kLoopStart 包装，不修改数组）。
+超时返回上一点重试，最多 3 次后跳过。
+移动超时和重试上限由 GoNode 以数值参数注入。
+
+**0.5.13 配置管理 — config_manager.h/cpp（相关代码段）**
+YAML 加载、nested struct 解析、范围验证。
+参数字段都在 GameConfig 嵌套结构体中，和 YAML 一对一映射。
+config_manager.h 不包含 yaml-cpp；YAML::Node 和解析辅助函数仅存在于 config_manager.cpp。
+
+**0.5.14 路径策略 — path_strategy.h/cpp（相关代码段）**
+FixedPathStrategy 只保存航点数量并生成线性访问索引，不持有坐标副本。
+GoNode 唯一持有可修改路径点，三个 Controller 通过非空只读引用访问。
+
+**0.5.15 性能监控 — performance_monitor.h/cpp（相关代码段）**
+命名定时器，记录 avg/min/max/std，每 10 秒输出报告。
+
+**0.5.16 视觉检测 — yolov5_detector.h/cpp（相关代码段）**
+TensorRT YOLOv5n 推理引擎：预处理 → enqueueV3 → 后处理 → PnP 距离/角度 → 弹道补偿。
+cached_armors_ 私有化 + getCachedArmors 只读访问；camera_matrix_/corners_3d_/dist_coeffs_ 预计算成员，
+三个 PnP 方法复用避免重复构造；input_data_ 预分配缓冲区消除每帧 1.1MB 堆分配。
+updateFrame 只共享不可变 cv::Mat 缓冲区，不再复制整帧像素；推理快照同样只复制 Mat 头。
+相机、弹道和检测参数通过 YOLOv5DetectorConfig 注入，不依赖 ConfigManager。
+
+**0.5.16a 可视化模块 — visualizer.h/cpp**
+独立 GUI 工作线程按 timer.visualization 刷新，cv::imshow/waitKey 不占用相机或 ROS 回调线程。
+仅在绘制时克隆一帧；由 enable_visualization 控制创建，无头服务器应显式设为 false。
+
+**0.5.16b 检测共享类型 — detection_types.h（相关代码段）**
+DetectedArmor 从 YOLOv5Detector 中提取，Visualizer 和 CombatManager 无需依赖 TensorRT 检测器类型。
+
+**0.5.17 游戏时间 — time_manager.h/cpp（相关代码段）**
+统一管理游戏时间，提供 isTimeout、timeSince 等方法。
+
+**0.5.18 跟踪状态机 — tracking_state_machine.h/cpp（相关代码段）**
+4 态跟踪状态机（LOST→DETECTING→TRACKING→TEMP_LOST）。
+从原 imm_tracker 提取，NIS 失效率 > 30% 时强制回 LOST。
+
+**0.5.19 单元测试（test/）**
+- CMakeLists.txt 中通过 `if(BUILD_TESTING)` 启用 GTest 测试
+- 当前 7 个测试目标、40 个 GTest 用例（CTest 汇总 47 条记录）；覆盖 YAML、NIS、配置边界、参数注入、路径所有权和摆动范围
+- 运行：`colcon test --packages-select go` 或直接 `./build/go/test_*`
+- 注意：test_config_manager 会读取源码中的 game_config.yaml，其余测试不依赖硬件
+
+**0.5.20 其他辅助模块**
+- logger.h/cpp（相关代码段）：ROS2 日志级别过滤
+- waypoint.h（相关代码段）：Waypoint 结构体定义
+
+0.6 快速定位指南
+-----------------
+
+**0.6.1 我想修改机器人的移动速度**
+1. 查找：src/go/config/game_config.yaml → speed 节点
+2. 修改：max_far / max_near / max_precise
+3. 测试：重新运行程序
+
+**0.6.2 我想修改摆动范围**
+1. 查找：src/go/config/game_config.yaml → swing 节点
+2. 修改：range / speed
+3. 测试：重新运行程序
+
+**0.6.3 我想修改血量变化阈值**
+1. 查找：src/go/config/game_config.yaml → health_change_thresholds
+2. 或 waypoint_utils.h → HEALTH_CHANGE_THRESHOLD_P4 等后备常量
+3. 修改阈值（负数，绝对值越大越难命中）
+4. 测试：重新运行程序
+
+**0.6.4 我想修改路径点**
+1. 查找：src/go/config/game_config.yaml → player1_waypoints / player2_waypoints
+2. 修改：x, y, yaw, pitch, has_shoot_task；运行时由 ConfigManager 直接加载
+3. 每个阵营当前必须保持 11 个路径点，修改后重新启动程序即可，无需重新编译
+
+**0.6.5 我想修改射击逻辑（自瞄/硬编码/摆动切换条件）**
+1. 查找：src/go/src/shoot_controller.h/cpp
+2. 理解：checkHealthChange → shouldDisableAutoAim → shouldStartSwinging
+3. 修改：keep 状态机一致性
+4. 测试：编译 + 运行确认降级逻辑正常
+
+**0.6.6 我想修改 EKF 跟踪器参数**
+1. 查找：src/go/src/target_ekf.h/cpp
+2. 理解：Q 过程噪声（q_yaw/q_pitch/q_dist）、R 自适应噪声
+3. 修改：注意 dt 缩放（Q ∝ dt）和距离相关 R
+4. 测试：编译 + 运行观察跟踪稳定性
+
+**0.6.7 我想修改导航逻辑（超时/重试/漂移）**
+1. 查找：src/go/src/movement_controller.h/cpp
+2. 理解：handleTimeoutRetry → handleShootingDrift → tryStartShooting
+3. 修改：保持重试次数和超时时间一致
+4. 测试：编译 + 测试所有导航场景
+
+**0.6.8 我想修改血量话题索引映射**
+1. 查找：src/go/src/waypoint_utils.h/cpp
+2. 理解：getEnemyIndex（直接返回内部索引 0-5）/ healthTopicIndexToInternalIndex（话题→内部转换）
+3. 修改：注意 Player1/Player2 对称
+4. 测试：编译 + 确认血量变化评估正确
+
+**0.6.9 我想添加新的定时器**
+1. 查找：src/go/src/go_node.h/cpp
+2. 在 go_node.h 中添加 timer SharedPtr
+3. 在 go_node.cpp 构造函数中 create_wall_timer
+4. 在对应的 Controller 中添加回调方法
+5. 测试：编译 + 确认定时器触发
+
+**0.6.10 我想调试视觉问题（YOLO 不检测/抖动）**
+1. 查日志：grep "检测到" 或启用 RCUTILS_LOGGING_SEVERITY=DEBUG
+2. 查距离门限：确认 kDistanceGateMax/kDistanceGateAcceptance
+3. 查 EKF 跟踪：确认 q_yaw/q_pitch/q_dist 和 R 自适应参数
+4. 查降级条件：确认 detection_fail_max
+
+0.7 代码修改检查清单
+-----------------
+
+在提交代码修改前，必须检查以下事项：
+
+□ ConfigManager 集成
+  □ 如果添加了新参数，是否在 ConfigManager 中添加了对应字段？
+  □ 是否在 GoNode::loadConfigParameters 中读取了配置？
+  □ 是否在 SharedContext 中添加了默认值？
+  □ 是否有后备值（代码中的默认值）？
+
+□ 编译测试
+  □ colcon build 是否成功？
+  □ 是否有警告？（OpenCV 警告可忽略）
+  □ 是否更新了相关文档？
+
+□ 功能测试
+  □ 程序是否正常启动？
+  □ 配置文件是否正确加载？
+  □ 所有 5 个定时器是否正常工作？
+  □ 所有话题是否正常通信？
+
+□ 性能测试
+  □ 推理延迟是否在预期范围内（~2ms）？
+  □ CPU 占用是否正常？
+  □ 内存占用是否正常？
+
+□ 代码质量
+  □ 注释说 WHY 不说 WHAT？
+  □ 是否有魔法数字？
+  □ 是否有重复代码？
+  □ 是否遵循了 .clang-format 风格？
+
+□ 文档更新
+  □ 是否更新了说明书.txt？
+  □ 是否清理了历史记录相关内容？
+  □ 是否更新了相关注释？
+
+0.8 紧急情况处理
+-----------------
+
+**0.8.1 程序无法启动**
+1. 检查模型文件：ls /home/robot/competition/models/
+2. 检查配置文件：ls /home/robot/competition/src/go/config/
+3. 检查编译产物：ls /home/robot/competition/install/go/lib/go/
+4. 检查 ROS2 环境：echo $ROS_DISTRO
+
+**0.8.2 编译失败**
+1. 检查语法错误
+2. 检查依赖是否安装
+3. 检查 CMakeLists.txt 配置
+4. 清理构建产物：rm -rf build install log
+5. 重新编译：colcon build
+
+**0.8.3 运行时崩溃**
+1. 查看崩溃日志：dmesg | tail -50
+2. 使用 GDB 调试：gdb ./install/go/lib/go/S_d2c2
+3. 使用 git 恢复：git checkout src/go/src/
+
+**0.8.4 配置文件加载失败**
+1. 检查 YAML 语法：python3 -c "import yaml; yaml.safe_load(open('game_config.yaml'))"
+2. 检查文件路径
+3. 检查文件权限
+4. 检查 yaml-cpp 是否安装：dpkg -l | grep yaml-cpp
+
+**0.8.5 性能突然下降**
+1. 检查 CPU 占用：top -p $(pgrep -f "ros2 run go")
+2. 检查推理延迟：查看性能监控报告
+3. 检查是否有内存泄漏：valgrind
+
+0.9 开发工作流
+-----------------
+
+**0.9.1 标准开发流程**
+1. 理解需求：明确要修改什么
+2. 定位代码：使用快速定位指南找到相关代码
+3. 理解逻辑：阅读完整代码和注释
+4. 修改代码：遵循代码修改检查清单
+5. 编译测试：确保编译通过
+6. 功能测试：测试所有相关功能
+7. 性能测试：确保性能不受影响
+8. 更新文档：更新说明书和注释
+9. 提交代码：使用 git 提交
+
+**0.9.2 紧急修复流程**
+1. 使用 git 备份：git stash
+2. 快速定位：使用快速定位指南
+3. 最小修改：只修改必要的代码
+4. 快速测试：只测试修复的问题
+5. 验证：重新编译测试
+
+**0.9.3 重大重构流程**
+1. 设计方案：详细设计新架构
+2. 创建分支：git checkout -b feature/new-feature
+3. 分步实现：小步快跑，每步编译测试
+4. 充分测试：测试所有场景
+5. 性能验证：确保性能不受影响
+6. 文档更新：更新所有相关文档
+7. 代码审查：检查所有修改
+8. 合并分支：git checkout main; git merge feature/new-feature
+
+0.10 联系与支持
+-----------------
+
+如果在开发过程中遇到问题：
+1. 首先查看本文档的"故障排查"章节
+2. 查看代码注释（所有关键逻辑都有注释）
+3. 查看日志输出（启用 DEBUG 级别）
+4. 查看性能监控报告
+5. 使用 git 版本控制管理代码变更
+
+记住：本系统经过充分测试和优化，大多数问题都可以通过遵循设计哲学和避免常见陷阱来避免。
+
+================================================================================
+第一部分：项目概述
+================================================================================
+
+1.1 项目简介
+-----------------
+本系统是一个基于 ROS2（Robot Operating System 2）的机器人自主控制系统，专
+为 T-DT 校园战机器人竞赛设计。系统实现了全自动的路径导航、视觉目标识别、
+精确射击控制以及智能的战术决策，能够在复杂竞技环境中自主完成比赛任务。
+
+1.2 系统特点
+-----------------
+• 全自主运行：无需人工干预，自动完成整个比赛流程
+• 视觉识别：基于 TensorRT GPU 加速的深度学习目标检测（YOLOv5n-D2C2）
+• 智能射击：自瞄 → 硬编码 → 摆动三级降级，见到就打
+• 战术决策：基于血量变化的智能响应和目标优先级管理
+• 鲁棒性强：超时重试、漂移检测、被攻击回撤、异常恢复
+• 高性能：5 个定时器并行控制，实时响应
+• 滤波稳定：3 态 EKF（yaw/pitch/dist 随机游走）+ 自适应 R + 自适应 Q + 角度残差限幅
+• 轻量高效：YOLOv5n 两分类模型，推理延迟仅 ~2ms
+• 模块化设计：27 个 .cpp（20 个运行源码 + 7 个测试），3 个解耦 Controller，SharedContext + RuntimeConfig 数据交换
+• 灵活配置：YAML 参数和双方路径点均可直接调整，无需重新编译
+
+1.3 应用场景
+-----------------
+• T-DT 校园战机器人竞赛
+• 自动射击靶场
+• 自主导航机器人演示
+• 深度学习目标检测研究
+
+1.4 运行环境
+-----------------
+• 操作系统：Ubuntu 20.04 / 22.04
+• ROS2 环境：Humble
+• 编程语言：C++17
+• 深度学习框架：TensorRT 10.x
+• 视觉库：OpenCV 4.5+
+• 编译工具：colcon / cmake
+• 配置格式：YAML
+
+1.5 项目结构
+-----------------
+```
+/home/robot/competition/
+├──     src/
+│   └── go/                          # 主程序包
+│       ├── CMakeLists.txt           # 编译配置（20 源文件 + 7 测试 + 1 header-only）
+│       ├── package.xml              # 包描述文件
+│       ├── CODING_STYLE.md          # 代码风格规范
+│       ├── .clang-format            # 代码格式配置
+│       ├── config/                  # 配置文件目录
+│       │   └── game_config.yaml     # 游戏配置文件（全参数）
+│       └── src/
+│           ├── go_d2c2.cpp          # 可执行入口 (main → GoNode, 支持单点测试模式)
+│           ├── go_node.h            # ROS2 节点，5 定时器 3 Controller 调度
+│           ├── go_node.cpp          # 356 行薄胶水层
+│           ├── shared_context.h     # 95 行——WithMutex<T> chassis/gimbal, atomic 检测状态
+│           ├── runtime_config.h     # 118 行——只读运行时配置参数
+│           ├── waypoint_utils.h     # 游戏规则常量（血量索引、敌人映射、阈值）
+│           ├── waypoint_utils.cpp   # 纯函数实现
+│           ├── movement_controller.h # 导航控制：调速、超时、漂移、状态转换
+│           ├── movement_controller.cpp # 307 行
+│           ├── combat_manager.h     # 视觉战斗：YOLO→距离门限→EKF→弹道补偿
+│           ├── combat_manager.cpp   # 229 行
+│           ├── state_manager.h      # 血量监控：命中判定、降级决策、被攻击回撤
+│           ├── state_manager.cpp    # 299 行
+│           ├── tracking_state_machine.h # 跟踪状态机（LOST→DETECTING→TRACKING→TEMP_LOST）
+│           ├── tracking_state_machine.cpp # 47 行
+│           ├── data_manager.h       # 数据管理：血量/位置/角度 时间窗口 deque
+│           ├── data_manager.cpp     # 146 行
+│           ├── shoot_controller.h   # 射击状态机（AUTO→HARDCODE→SWING）
+│           ├── shoot_controller.cpp # 113 行
+│           ├── path_navigator.h     # 路径遍历（顺序前进/返回/跳过/kLoopStart 循环）
+│           ├── path_navigator.cpp   # 133 行
+│           ├── config_manager.h     # GameConfig + 公开加载接口（不包含 yaml-cpp）
+│           ├── config_manager.cpp   # YAML 解析实现
+│           ├── path_strategy.h      # 只生成访问索引，不持有航点
+│           ├── path_strategy.cpp    # 固定线性索引实现
+│           ├── performance_monitor.h # 命名定时器性能监控
+│           ├── performance_monitor.cpp # 100 行
+│           ├── time_manager.h       # 游戏时间管理
+│           ├── time_manager.cpp     # 41 行
+│           ├── logger.h             # 日志过滤器
+│           ├── logger.cpp           # 8 行
+│           ├── general_kalman_filter.h # 通用 KF（仅 NIS，无 NEES）
+│           ├── general_kalman_filter.cpp # 60 行
+│           ├── rolling_median_filter.h   # 滚动中值滤波
+│           ├── target_ekf.h         # 3 态 EKF（yaw/pitch/dist 随机游走）
+│           ├── target_ekf.cpp       # 99 行
+│           ├── yolov5_detector.h    # YOLOv5 TensorRT 推理引擎封装（预计算PnP常量+预分配缓冲区）
+│           ├── yolov5_detector.cpp  # 513 行
+│           ├── detection_types.h    # DetectedArmor 轻量共享类型
+│           ├── visualizer.h         # 可视化模块（GUI 绘制，与推理解耦）
+│           ├── visualizer.cpp       # 33 行
+│           └── waypoint.h           # Waypoint 结构体
+│       └── test/
+│           ├── test_waypoint_utils.cpp    # 航点工具纯函数（7 个测试）
+│           ├── test_time_manager.cpp     # 游戏时间管理（4 个测试）
+│           ├── test_data_manager.cpp     # 数据管理（6 个测试）
+│           ├── test_path_navigator.cpp   # 路径导航与索引策略（12 个测试）
+│           ├── test_target_ekf.cpp       # EKF/NIS（7 个测试）
+│           ├── test_config_manager.cpp   # YAML + 滤波窗口校验（2 个测试）
+│           └── test_shoot_controller.cpp # 摆动和 miss 阈值注入（2 个测试）
+├── tdt_interface/                   # 自定义消息接口包
+│   ├── msg/
+│   │   ├── SendData.msg             # 发送数据（角度+射击指令）
+│   │   └── ReceiveData.msg          # 接收数据（实时角度）
+├── models/
+│   └── yolov5n_d2c2_fp16.engine # TensorRT 引擎
+├── D2C2/                            # YOLOv5n 模型训练
+│   ├── train/train_yolov5.py        # 训练+导出脚本
+│   ├── datasets/RMCOCO2/            # 数据集（10000 张）
+│   └── scripts/convert_to_tensorrt.sh
+├── 操作手册.pdf
+├── 规则手册.doc
+└── 说明书.txt                        # 本文档
+```
+
+================================================================================
+第二部分：系统架构与设计
+================================================================================
+
+2.1 总体架构
+-----------------
+```
+                         ┌─────────────────────────────────────────┐
+                         │              GoNode (节点)               │
+                         │  5 个定时器 + 5 个订阅 + 2 个发布        │
+                         └──────────┬──────────────┬───────────────┘
+                                    │              │
+                    ┌───────────────┼──────────────┼───────────────┐
+                    │               │              │               │
+           ┌────────▼──────┐  ┌────▼──────┐  ┌───▼────────┐  ┌───▼──────┐
+           │MovementCtrl   │  │CombatMgr  │  │StateMgr   │  │基础模块    │
+           │controlLoop    │  │shootLoop  │  │healthCheck│  │DataManager │
+           │positionAdjust │  │swingLoop  │  │Loop       │  │PathNavigator│
+           └──────┬────────┘  └────┬──────┘  └───┬────────┘  │ShootCtrl  │
+                  │                │             │           │ConfigMgr  │
+                  │                │             │           └───────────┘
+                  └────────────────┼─────────────┘
+                                   │
+                           ┌────────▼────────┐
+                          │  SharedContext  │  ← mutex 保护多线程访问
+                          │  state          │  (MOVING/SHOOTING)
+                          │  current_yaw    │  (shootLoop 写入, swingLoop 读取)
+                          │  target_locked  │  (shootLoop 写入, swingLoop 读取)
+                          │  is_under_attack│  (StateManager 写入)
+                          │  detection_fail │  (CombatManager 写入)
+                          │  _count         │
+                          └─────────────────┘
+                                    │
+                           ┌────────▼────────┐
+                          │  RuntimeConfig  │  ← 只读，const& 注入 Controller
+                          │  speed/threshold│
+                          │  swing/config   │
+                          │  timeout/...    │
+                          └─────────────────┘
+```
+
+数据流：
+```
+controlLoop (5ms)
+  ├─ 读 state, current_position (data_manager)
+  ├─ 计算距离 → 分级调速
+  ├─ 超时检查 → markReturnToPrevious / skipCurrentPoint
+  └─ 到达 → tryStartShooting → state = SHOOTING
+
+shootLoop (30ms)
+  ├─ YOLO 推理 + 距离门限
+  ├─ 3 态 EKF 跟踪（yaw/pitch/dist 球坐标）
+  ├─ 弹道补偿 → 写 ctx_.current_yaw/pitch
+  └─ 写 ctx_.target_locked
+
+swingLoop (20ms)
+  ├─ 读 ctx_.current_yaw/pitch + target_locked
+  ├─ 摆动模式覆盖 current_yaw
+  └─ 发布角度指令 (if_shoot = target_locked)
+
+healthCheckLoop (1s)
+  ├─ 读 data_manager 血量变化
+  ├─ 评估命中/miss → 降级决策
+  ├─ 被攻击检测 → 回撤
+  └─ 击杀检测 → 前进
+```
+
+2.2 核心类设计
+
+2.2.1 SharedContext - 共享状态（shared_context.h）
+-----------------
+功能：三个 Controller 的运行时数据交换中心。
+
+字段分组：
+- 玩家 ID：构造时设置，此后只读
+- 机器人主状态：state (MOVING/SHOOTING)，被 StateManager 和 MovementController 读写
+- 云台角度：target_yaw/pitch（航点配置），current_yaw/pitch（实际应指向的角度）
+- 视觉跟踪状态：target_locked, detection_fail_count, last_accepted_distance, apply_distance_gate（std::atomic，跨线程安全）
+- 被攻击状态：is_under_attack, attack_waypoint_stack
+- 摆动定时器：last_swing_time, last_swing_time_set
+- 精确调整标志：is_precise_adjusting（std::atomic<bool>，跨线程安全）
+
+注意：配置参数已全部移入 RuntimeConfig（runtime_config.h），不在此处。
+SharedContext 只包含运行时可变状态。配置参数通过 const& 注入 Controller。
+
+竞态保护：
+- mutex 保护 state, current_yaw/pitch, target_locked, is_under_attack
+- detection_fail_count/last_accepted_distance/apply_distance_gate 是 atomic，无需 mutex
+- is_precise_adjusting 是 atomic<bool>，无需 mutex
+- 持锁期间不得调用其他模块的方法（防死锁）
+
+2.2.2 GoNode - 主节点（go_node.h/cpp）
+-----------------
+功能：ROS2 节点的薄胶水层。
+
+职责：
+- 创建 3 个 Controller、DataManager、PathNavigator、Visualizer 等子模块
+- 订阅 5 个话题：position, angles, health, camera, game_time
+- 发布 2 个话题：target_speed, target_angles
+- 启动 5 个定时器
+- 每个定时器委托到对应 Controller
+
+2.2.3 MovementController - 导航控制（movement_controller.h/cpp）
+-----------------
+功能：目标航点导航、分级调速、超时重试、射击漂移检测。
+
+controlLoop（5ms 周期）：
+1. 从 PathNavigator 获取当前目标航点
+2. 计算距离 → 远/近/精确三档速度
+3. 超时（>move_timeout）→ 退一个重试，3 次跳过
+4. SHOOTING 状态下被推离 > 2×threshold → 切回 MOVING
+5. 到达 → tryStartShooting 触发 MOVING → SHOOTING
+
+positionAdjustLoop（1s 周期）：
+- 射击状态下小幅纠正位置漂移
+
+2.2.4 CombatManager - 视觉战斗（combat_manager.h/cpp）
+-----------------
+功能：YOLO 推理 → 跟踪 → 弹道补偿 → 摆动 + 射击指令。
+
+shootLoop（30ms 周期）：
+1. YOLO 推理（detectArmors）
+2. 距离门限：剔除 > 30m 或跳变 > 10m 的目标
+3. 3 态 EKF 跟踪（yaw/pitch/dist 球坐标，随机游走模型）
+4. 弹道补偿（重力下垂 + 飞行时间修正）
+5. 写入 ctx_.current_yaw/current_pitch
+6. 连续 detection_fail_max 帧无检测 → 降级到硬编码角度
+
+swingLoop（20ms 周期）：
+- 摆动模式下：target_yaw + swing_offset
+- 自瞄禁用但未摆动：回退到 target_yaw
+- 其他情况：保持 shootLoop 写入的 IMM 结果
+
+2.2.5 StateManager - 血量评估（state_manager.h/cpp）
+-----------------
+功能：血量变化评估、自瞄降级、被攻击回撤、击杀检测。
+
+healthCheckLoop（1s 周期）决策链：
+```
+checkHealthChange(health_change, threshold)
+  → 命中（血量降幅达标）：重置 miss 计数
+  → miss：miss 计数 + 1
+    → 超过 disable 阈值：disableAutoAim（切 hardcode）
+      → 超过 swing 阈值：startSwinging（±6° 摆动）
+        → 摆动中命中：stopSwinging，回退到 1 秒前 yaw
+
+self_health_change < 0
+  → 自身掉血：save to attack_waypoint_stack → 跳到下一射击航点
+  → 基地区域（P7-P11）：直接跳到下个基地航点
+
+current_enemy_health <= 0
+  → 击杀：state = MOVING, 清空被攻击栈, 前进
+```
+
+2.2.6 TargetEKF - 3 态 EKF 跟踪（target_ekf.h/cpp）
+-----------------
+功能：球坐标卡尔曼滤波（yaw/pitch/dist 随机游走）。
+
+特点：
+- 状态：[yaw, pitch, dist]^T，与 PnP 观测直接对应
+- 预测：F=I（随机游走），Q ∝ dt（过程噪声随帧间隔缩放）
+- 自适应 Q：Q×min(max_scale, 1+α×sqrt(NIS/3))，预测误差大时适度提高测量权重
+- 观测：h(x)=x（线性），R 自适应（dist 噪声随距离对数增长）
+- 残差限幅：yaw/pitch 使用 atan2(sin, cos) 避免 ±π 跳变
+- NIS 监控：100 帧滑动窗口，失效率 > 30% → 状态机强制重置
+
+2.2.7 DataManager - 数据管理（data_manager.h/cpp）
+-----------------
+功能：时间窗口数据库。
+
+数据结构：
+- 自身血量：atomic + deque 历史 + change 缓存
+- 敌方血量：6 个独立队列
+- 位置/角度：按时间戳索引的 deque
+
+核心计算：
+- health_change = current_health - health from 5 秒前
+- 5 秒窗口（50 帧），足够排除单帧噪声
+- 超过 MAX_REASONABLE_HEALTH_CHANGE (500) → 丢弃（血量话题异常）
+
+2.2.8 ShootController - 射击状态机（shoot_controller.h/cpp）
+-----------------
+功能：管理自瞄/硬编码/摆动三级降级。
+
+状态流：
+```
+进入 SHOOTING → startShooting(初始血量)
+  → 自瞄启用（IMM 跟踪）
+  → checkHealthChange 连续 miss ≥ disable_threshold(10)
+    → disableAutoAim（hardcode 角度）
+    → 连续 miss ≥ swing_threshold(3)
+      → startSwinging（±range° 摆动）
+      → 检测到命中 → stopSwinging
+```
+
+2.2.9 PathNavigator - 路径导航（path_navigator.h/cpp）
+-----------------
+功能：P1-P11 序列遍历。
+
+路径结构：
+- P1-P3：非射击位，快速通过
+- P4-P11：均为射击位（P4=敌方5号, P5=敌方4号, P6=前哨站, P7-P11=基地）
+- P6 后进入 P7→P8→P9→P10→P11→P7 无限循环
+
+重试机制：
+- 超时（>move_timeout）→ markReturnToPrevious，最多 3 次
+- 3 次失败 → skipCurrentPoint
+
+2.2.10 ConfigManager - 配置管理（config_manager.h/cpp）
+-----------------
+功能：从 YAML 加载游戏配置，嵌套 GameConfig 结构体。
+config_manager.h 只暴露强类型配置和公开接口；yaml-cpp 与 YAML::Node 被限制在 config_manager.cpp。
+
+支持的配置项（22 个分类）：
+- 玩家配置（Player1/Player2）
+- 路径点（11 个航点的位置+角度+射击任务）
+- 血量变化阈值（P4/P5/P6/基地）
+- 速度控制（远/近/精确/切换距离/到达阈值）
+- 相机参数（焦距、光心）
+- 弹道参数（子弹速度、重力）
+- 位置调整（保持阈值、调整间隔）
+- 摆动参数（范围、速度）
+- 射击控制（连续未命中阈值）
+- 滤波参数
+- 超时参数
+- 检测失败参数
+- 单位换算
+- EKF 参数（过程/测量噪声、初始协方差、自适应 Q）
+- NIS 检验参数（chi2 阈值、窗口大小）
+- 跟踪状态机参数（检测帧数、丢失容忍、NIS 阈值）
+- 检测参数（置信度、NMS IoU）
+- 定时器间隔（ms）
+- 漂移检测参数（倍数、超时）
+- 锁定加速倍率
+- 数据管理器参数（血量变化上限、容差、回溯时间）
+- 导航器参数（重试次数上限）
+- 战斗参数（EKF 默认 dt、调试日志间隔）
+- 路点工具参数（逃逸比例、回退阈值）
+
+2.2.11 PathStrategy - 路径策略（path_strategy.h/cpp）
+-----------------
+功能：根据 GoNode 提供的航点数量生成线性访问索引；策略不持有航点坐标。
+
+2.2.12 PerformanceMonitor - 性能监控（performance_monitor.h/cpp）
+-----------------
+功能：命名定时器性能统计，每 10 秒输出 avg/min/max/std。
+
+2.2.13 TimeManager - 时间管理（time_manager.h/cpp）
+-----------------
+功能：统一管理游戏时间，提供 isTimeout、timeSince 等方法。
+
+2.3 状态机设计
+
+2.3.1 MOVING 状态
+-----------------
+行为：
+- 计算到目标航点的方向和距离
+- 根据距离自适应调整速度
+- 检测到达条件
+- 处理超时和重试
+
+速度控制策略：
+- 远距离（>switch_distance 5 地图单位，P1-P3 为 10）：50 地图单位/s（10m/s）
+- 中距离（precise_mode_distance ~ switch_distance，即 1.5~5 地图单位）：15 地图单位/s（3m/s）
+- 近距离（≤1.5 地图单位）：线性过渡 1.5~15 地图单位/s（precise_adjust_speed ~ max_near）
+- 目标锁定时所有阈值翻倍（提前刹停，边走边打）
+
+2.3.2 SHOOTING 状态
+-----------------
+行为：
+- 启用射击控制器
+- 根据射击模式更新云台角度（自瞄/硬编码/摆动）
+- 监控血量变化
+- 检测被攻击
+- 判断目标是否被摧毁
+
+2.3.3 状态转换条件
+-----------------
+MOVING → SHOOTING：
+- 到达有射击任务的航点
+- 距离小于到达阈值
+
+SHOOTING → MOVING：
+- 目标被摧毁（血量 ≤ 0）
+- 自身被攻击（根据点位不同有不同策略）
+- SHOOTING 状态下被推得太远（等待 5 秒后判定）
+- 漂移超过阈值 ×2（1.6m）
+
+2.4 通信机制
+
+2.4.1 ROS2 消息定义
+
+SendData.msg（发送数据）：
+```
+float32 yaw      # 目标 Yaw 角度（度）
+float32 pitch    # 目标 Pitch 角度（度）
+bool if_shoot    # 是否射击
+```
+
+ReceiveData.msg（接收数据）：
+```
+float32 yaw                      # 当前 Yaw 角度（度）
+float32 pitch                    # 当前 Pitch 角度（度）
+builtin_interfaces/Time timestamp  # 时间戳
+```
+
+2.4.2 话题映射
+
+| 话题类型 | Player1 | Player2 | 数据类型 | 说明 |
+|---------|---------|---------|---------|------|
+| 位置订阅 | /position_player_1 | /position_player_2 | PoseStamped | 机器人位置 |
+| 角度订阅 | /real_angles_player_1 | /real_angles_player_2 | ReceiveData | 实时云台角度 |
+| 图像订阅 | /camera_image_player_1 | /camera_image_player_2 | Image | 相机图像 |
+| 血量订阅 | /game_healths | /game_healths | Int32MultiArray | 12 个单位 |
+| 时间订阅 | /game_time | /game_time | Int32 | 游戏剩余秒数 |
+| 速度发布 | /target_speed_player_1 | /target_speed_player_2 | TwistStamped | 目标速度 |
+| 角度发布 | /target_angles_player_1 | /target_angles_player_2 | SendData | 目标角度+射击 |
+
+2.4.3 血量话题索引
+
+/game_healths 数组（Int32MultiArray[12]）：
+- 下标 0~5：Player1（蓝方）的 6 个单位
+  - 0: Player1 本体
+  - 1: 蓝方 3 号兵
+  - 2: 蓝方 4 号兵
+  - 3: 蓝方 5 号兵
+  - 4: 蓝方前哨站
+  - 5: 蓝方基地
+
+- 下标 6~11：Player2（红方）的 6 个单位
+  - 6: Player2 本体
+  - 7: 红方 3 号兵
+  - 8: 红方 4 号兵
+  - 9: 红方 5 号兵
+  - 10: 红方前哨站
+  - 11: 红方基地
+
+对 Player1，敌方是 [6..11]；对 Player2，敌方是 [0..5]。
+内部索引 internal_index 固定 0~5，通过 healthTopicIndexToInternalIndex 映射。
+getEnemyIndex 直接返回内部索引（0-5），无需二次转换。
+
+2.5 路径点配置详情
+
+路径点数据以 game_config.yaml 为唯一数据源。ConfigManager 启动时解析蓝红双方路径，
+GoNode 根据 player_id 复制当前阵营序列作为唯一可修改航点，并把数量注入 FixedPathStrategy。
+配置加载失败或路径点数量不是 11 时拒绝启动，避免使用未知路径。
+
+关键规则：
+- P1-P3：非射击位，快速通过（到达阈值 2.0）
+- P4：射击位，攻击敌方 5 号机器人
+- P5：射击位，攻击敌方 4 号机器人
+- P6：射击位，攻击前哨站
+- P7-P11：射击位，攻击基地（P7→P8→P9→P10→P11→P7 循环）
+
+================================================================================
+第三部分：编译与安装
+================================================================================
+
+3.1 系统要求
+-----------------
+• Ubuntu 20.04 或 22.04 LTS
+• ROS2 Humble Hawksbill
+• CMake 3.10+
+• GCC/G++ 9.0+
+• OpenCV 4.5+
+• CUDA Toolkit 12.x（用于 TensorRT 加速）
+• cuDNN 8.x（用于 TensorRT 加速）
+• TensorRT 10.x（深度学习推理引擎）
+• yaml-cpp 0.7+（配置文件支持）
+
+3.2 环境准备
+-----------------
+```bash
+# 安装 ROS2 Humble（如果尚未安装）
+sudo apt update && sudo apt install locales
+sudo locale-gen en_US en_US.UTF-8
+sudo update-locale LC_ALL=en_US.UTF-8 LANG=en_US.UTF-8
+export LANG=en_US.UTF-8
+
+sudo apt install software-properties-common
+sudo add-apt-repository universe
+sudo apt update && sudo apt install curl
+sudo curl -sSL https://raw.githubusercontent.com/ros/rosdistro/master/ros.key -o /usr/share/keyrings/ros-archive-keyring.gpg
+
+echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/ros-archive-keyring.gpg] http://packages.ros.org/ros2/ubuntu $(. /etc/os-release && echo $UBUNTU_CODENAME) main" | sudo tee /etc/apt/sources.list.d/ros2.list > /dev/null
+
+sudo apt update
+sudo apt install ros-humble-desktop
+sudo apt install python3-rosdep
+
+# 安装依赖
+sudo apt install ros-humble-geometry-msgs ros-humble-sensor-msgs ros-humble-cv-bridge
+sudo apt install libopencv-dev
+sudo apt install libyaml-cpp-dev  # YAML 配置文件支持
+
+# 安装 TensorRT（如果需要 GPU 加速）
+# 下载并安装 TensorRT: https://developer.nvidia.com/tensorrt
+```
+
+3.3 编译步骤
+-----------------
+```bash
+cd /home/robot/competition
+source /opt/ros/humble/setup.bash
+colcon build --packages-select tdt_interface go
+source install/setup.bash
+```
+
+3.4 安装后的目录结构
+-----------------
+```bash
+install/
+├── go/
+│   └── lib/go/S_d2c2            # 可执行文件
+└── tdt_interface/
+    └── share/tdt_interface/msg/
+```
+
+3.5 编译常见问题
+
+**3.5.1 TensorRT 模型文件缺失**
+```bash
+ls /home/robot/competition/models/yolov5n_d2c2_fp16.engine
+# 如果不存在，训练：
+cd /home/robot/competition/D2C2/train
+python3 train_yolov5.py  # 自动完成训练→ONNX→TensorRT→部署
+```
+
+**3.5.2 OpenCV 版本冲突**
+- 警告可忽略，运行时会优先使用系统版本
+
+**3.5.3 ROS2 依赖缺失**
+```bash
+source /opt/ros/humble/setup.bash
+rosdep install --from-paths src --ignore-src -r -y
+```
+
+**3.5.4 colcon 命令未找到**
+```bash
+sudo apt install python3-colcon-common-extensions
+```
+
+**3.5.5 yaml-cpp 依赖缺失**
+```bash
+sudo apt install libyaml-cpp-dev
+```
+
+================================================================================
+第四部分：配置与运行
+================================================================================
+
+4.1 运行前准备
+-----------------
+```bash
+source /opt/ros/humble/setup.bash
+source /home/robot/competition/install/setup.bash
+```
+
+4.2 启动游戏模拟器
+-----------------
+根据操作手册.pdf 中的说明启动 T-DT 仿真器。
+
+4.3 运行机器人控制程序
+
+**4.3.1 运行 Player1（蓝队）**
+```bash
+ros2 run go S_d2c2 1
+```
+
+**4.3.2 运行 Player2（红队）**
+```bash
+ros2 run go S_d2c2 2
+```
+
+**4.3.3 同时运行两个玩家**
+终端 1：ros2 run go S_d2c2 1
+终端 2：ros2 run go S_d2c2 2
+
+**4.3.4 后台运行**
+```bash
+ros2 run go S_d2c2 1 > /tmp/player1.log 2>&1 &
+ros2 run go S_d2c2 2 > /tmp/player2.log 2>&1 &
+```
+
+4.4 配置文件使用
+
+配置文件位置：src/go/config/game_config.yaml
+
+修改步骤：
+```bash
+vim /home/robot/competition/src/go/config/game_config.yaml
+# 修改后重新编译
+colcon build --packages-select go
+source install/setup.bash
+```
+
+4.5 日志查看
+-----------------
+```bash
+tail -f /tmp/player1.log
+ros2 run go S_d2c2 1 2>&1 | tee player1_log.txt
+# 启用 DEBUG 级别
+RCUTILS_LOGGING_SEVERITY=DEBUG ros2 run go S_d2c2 1
+```
+
+4.6 性能监控
+-----------------
+系统每 10 秒输出一次性能报告：
+```
+========== 性能监控报告 ==========
+inference: avg=1.79ms, min=1.30ms, max=3.06ms, std=0.36ms (采样: 307)
+=================================
+```
+
+4.7 代码格式化
+-----------------
+```bash
+cd /home/robot/competition/src/go
+find . -name "*.cpp" -o -name "*.h" | xargs clang-format -i
+```
+
+4.8 运行状态监控
+-----------------
+```bash
+ros2 node list          # 输出：/go_node
+ros2 topic list         # 查看所有话题
+ros2 topic echo /position_player_1  # 查看位置
+ros2 topic echo /game_healths       # 查看血量
+```
+
+4.9 停止程序
+-----------------
+前台：Ctrl+C
+后台：pkill -f "ros2 run go"
+
+4.10 清理编译产物
+-----------------
+```bash
+rm -rf build install log
+colcon build
+```
+
+================================================================================
+第五部分：ROS2 接口详细说明
+================================================================================
+
+5.1 订阅话题（Subscribers）
+
+5.1.1 /position_player_X（X=1 或 2）
+-----------------
+类型：geometry_msgs/msg/PoseStamped
+说明：机器人位置（地图坐标），来自游戏模拟器，约 100Hz
+
+5.1.2 /real_angles_player_X（X=1 或 2）
+-----------------
+类型：tdt_interface/msg/ReceiveData
+说明：云台实际角度（yaw/pitch），来自游戏模拟器，约 100Hz
+
+5.1.3 /game_healths
+-----------------
+类型：std_msgs/msg/Int32MultiArray
+说明：血量数组 [12]，[0..5]=Player1, [6..11]=Player2，约 10Hz
+
+5.1.4 /camera_image_player_X（X=1 或 2）
+-----------------
+类型：sensor_msgs/msg/Image
+说明：640×480 bgr8 图像，约 30Hz
+
+5.1.5 /game_time
+-----------------
+类型：std_msgs/msg/Int32
+说明：游戏剩余秒数，约 1Hz
+
+5.2 发布话题（Publishers）
+
+5.2.1 /target_speed_player_X（X=1 或 2）
+-----------------
+类型：geometry_msgs/msg/TwistStamped
+说明：目标速度（地图单位/s），发布频率 200Hz（5ms）
+
+5.2.2 /target_angles_player_X（X=1 或 2）
+-----------------
+类型：tdt_interface/msg/SendData
+说明：目标角度 + 射击指令，发布频率 50Hz（20ms，swingLoop）
+
+================================================================================
+第六部分：算法与技术细节
+================================================================================
+
+6.0 YOLOv5n 模型训练与导出
+-----------------
+详见 D2C2/README.md。概要：
+- 模型：YOLOv5n nano (ultralytics)
+- 输入：224×416 RGB
+- 输出：[1, 6, 1911] (cx, cy, w, h, cls0, cls1)
+- 推理延迟：~2ms (TensorRT FP16)
+- 训练脚本：D2C2/train/train_yolov5.py
+
+6.1 深度学习目标检测算法
+-----------------
+YOLOv5n 两分类模型：
+- 类别 0：红方装甲板
+- 类别 1：蓝方装甲板
+- Player1（蓝队）：识别类别 0（红方）
+- Player2（红队）：识别类别 1（蓝方）
+- 保留所有高于阈值 (0.1) 的检测，shootLoop 中通过距离门限 + 最近距离筛选
+
+6.2 PnP 距离计算算法
+-----------------
+- 装甲板尺寸：200mm × 125mm
+- 相机内参：Fx=Fy=554.26, Cx=320.0, Cy=240.0
+- 使用 solvePnP 解算 3D 位姿
+- PnP 距离经 rolling_median_filter 平滑（窗口可配）
+
+6.3 弹道补偿算法
+-----------------
+- 子弹速度：23 m/s
+- 重力加速度：5 地图单位/s²
+- 飞行时间：t = distance / bullet_speed
+- 重力下垂：drop = 0.5 × g × t²
+- 俯仰补偿：asin(drop / distance)
+
+6.4 滤波系统
+-----------------
+3 态 EKF（随机游走）：
+- 状态：[yaw, pitch, dist]^T
+- 预测：F=I，Q=diag(q_yaw·dt, q_pitch·dt, q_dist·dt)
+  - q_yaw=0.01, q_pitch=0.01, q_dist=0.5（同济实测值）
+  - 自适应 Q：Q×min(max_scale, 1+α×sqrt(NIS/3))，避免量纲混合并限制异常放大
+- 观测：H=I，R=diag(4e-3, 4e-3, log(dist+1)/200 + 9e-2)
+  - 距离越远 R 越大（PnP 远距离精度下降）
+- 残差限幅：yaw/pitch 使用 atan2(sin(a-b), cos(a-b))
+- NIS 监控：χ²(3) 95% 上界 7.815，100 帧滑动窗口
+
+距离闸门：
+- 30m 上限：raw > 30m 直接丢弃
+- 10m 跳变：与上帧差距 > 10m 丢弃
+- 目标丢失后重锁定时关闭门限
+
+6.5 血量变化计算
+-----------------
+- 5 秒滑动窗口
+- health_change = 当前血量 - 5 秒前血量
+- 变化超过 MAX_REASONABLE_HEALTH_CHANGE (500) → 丢弃
+
+各点位阈值：
+| 点位 | 阈值 | 目标 |
+|------|------|------|
+| P4 | -50 | 5 号兵 |
+| P5 | 0 | 4 号兵（血量少） |
+| P6 | -60 | 前哨站 |
+| P7-P11 | -120 | 基地 |
+
+6.6 速度控制算法
+-----------------
+三级调速：
+- 远距离（>switch_distance）：max_speed_far = 50
+- 中距离（precise_mode_distance ~ switch_distance）：max_speed_near = 15
+- 近距离（≤precise_mode_distance）：线性过渡 precise_adjust_speed(1.5) ~ max_speed_near(15)
+
+目标锁定制动：所有阈值翻倍
+
+6.7 摆动算法
+-----------------
+- 范围：±6 度
+- 速度：10 度/秒
+- 更新频率：50Hz（20ms）
+- 单次步进：0.2 度
+- 停止条件：检测到血量变化，回退到 1 秒前角度
+
+================================================================================
+第七部分：故障排查与调试
+================================================================================
+
+7.1 常见问题及解决方案
+
+**7.1.1 程序无法启动**
+- 检查 ROS2 环境：echo $ROS_DISTRO
+- 检查模型文件：ls /home/robot/competition/models/yolov5n_d2c2_fp16.engine
+- 检查可执行文件：ls /home/robot/competition/install/go/lib/go/S_d2c2
+- 重新编译：colcon build --packages-select go
+
+**7.1.2 配置文件加载失败**
+- 检查文件路径和 YAML 语法
+- 检查 yaml-cpp 是否安装：dpkg -l | grep yaml-cpp
+
+**7.1.3 机器人不移动**
+- 检查话题发布：ros2 topic echo /target_speed_player_1
+- 检查位置订阅：ros2 topic echo /position_player_1
+- 检查配置文件是否加载
+
+**7.1.4 射击不工作**
+- 检查射击命令：ros2 topic echo /target_angles_player_1
+- 检查相机图像：ros2 topic echo /camera_image_player_1
+- 检查血量数据：ros2 topic echo /game_healths
+- 检查日志："检测到" "血量变化" 等
+
+**7.1.5 视觉检测失败**
+- 检查模型文件是否存在
+- 检查相机图像质量
+- 检查日志：连续检测失败警告
+
+**7.1.6 角度突然跳变**
+- 检查 IMM 重置时机（目标丢失→重锁定）
+- 检查距离门限是否正常
+
+**7.1.7 持续抖动**
+- 增大 EKF Q 矩阵系数（q_yaw/q_pitch/q_dist）
+- 增大 R 对角元素（降低观测置信度）
+- 启用自适应 Q（增大 q_adaptive_alpha）以动态补偿模型失配
+- 检查距离门限是否正常
+
+7.2 调试技巧
+-----------------
+```bash
+# 设置日志级别
+RCUTILS_LOGGING_SEVERITY=DEBUG ros2 run go S_d2c2 1
+RCUTILS_LOGGING_SEVERITY=WARN ros2 run go S_d2c2 1
+
+# 话题监控
+ros2 topic echo /game_healths
+ros2 topic echo /target_speed_player_1
+ros2 topic echo /target_angles_player_1
+
+# rqt 可视化
+sudo apt install ros-humble-rqt-common-plugins
+rqt
+
+# 记录和回放
+ros2 bag record -a -o my_bag
+ros2 bag play my_bag
+
+# 性能分析
+top -p $(pgrep -f "ros2 run go")
+```
+
+7.3 日志消息说明
+-----------------
+关键日志：
+- [INFO] GoNode initialized for Player X — 节点初始化完成
+- [INFO] 配置文件加载成功 — 配置文件加载成功
+- [INFO] 到达P{N},开始射击任务 — 到达射击航点
+- [INFO] P{N}: 血量变化=X, 阈值=Y, 连续未达标=Z — 血量评估
+- [INFO] P{N}: 检测到自身血量减少X，被攻击 — 被攻击检测
+- [INFO] P{N}: 目标被摧毁，前往下一点 — 击杀
+- [INFO] P{N}: 超时，返回上一位点（重试X/3） — 防卡死重试
+- [WARN] 连续检测失败,保持当前角度 — 视觉降级
+- [INFO] P{N}: 禁用自瞄，切换到硬编码 — 自瞄降级
+- [INFO] P{N}: 连续未达标触发摆动 — 摆动模式
+
+================================================================================
+第八部分：附录
+================================================================================
+
+8.1 单位换算表
+-----------------
+| 物理量 | 地图单位 | 真实单位 | 换算关系 |
+|--------|---------|---------|---------|
+| 长度 | 1 | 0.2 米 | 1 地图单位 = 0.2m |
+| 速度 | 1 | 0.2m/s | 1 地图单位/s = 0.2m/s |
+| 装甲板宽 | 1.0 | 200mm | - |
+| 装甲板高 | 0.625 | 125mm | - |
+| 子弹速度 | 23 | 23m/s | - |
+| 重力 | 5 | 1m/s² | 5 × 0.2 = 1.0 m/s² |
+
+8.2 坐标系说明
+-----------------
+• 地图坐标系：原点在地图中心，X 轴向右，Y 轴向上
+• 相机坐标系：原点在相机光心，X 轴向右，Y 轴向下，Z 轴向前
+• 云台角度：Yaw 为水平旋转角，Pitch 为俯仰角
+
+8.3 代码统计
+-----------------
+• 代码文件总数：50 个（27 个 .cpp + 23 个 .h/.hpp）
+  - 其中 7 个测试文件（test/test_*.cpp）
+• go_node.h/cpp：131+677 行（配置组装、航点所有权与 ROS2 薄胶水层）
+• go_d2c2.cpp：79 行（可执行入口，main → GoNode）
+• shared_context.h：95 行（共享运行时状态，检测字段已升级为 atomic）
+• runtime_config.h：120 行（只读配置参数）
+• movement_controller.h/cpp：115+423 行
+• combat_manager.h/cpp：80+309 行
+• state_manager.h/cpp：105+335 行
+• tracking_state_machine.h/cpp：69+135 行（4 态跟踪状态机）
+• data_manager.h/cpp：118+256 行
+• shoot_controller.h/cpp：118+194 行（有限范围三角波摆动，值对象配置注入）
+• path_navigator.h/cpp：92+238 行
+• config_manager.h/cpp：156+444 行（yaml-cpp 仅在 cpp）
+• path_strategy.h/cpp：78+44 行（仅索引策略，不持有航点）
+• performance_monitor.h/cpp：89+193 行
+• waypoint_utils.h/cpp：110+155 行
+• general_kalman_filter.h/cpp：82+153 行（通用 KF 底层）
+• target_ekf.h/cpp：59+174 行，归一化 NIS 自适应 Q/R
+• rolling_median_filter.h/cpp：45+68 行（滚动中值滤波）
+• yolov5_detector.h/cpp：177+513 行（TensorRT 推理引擎，值对象配置注入）
+• detection_types.h：15 行（DetectedArmor 轻量共享类型）
+• visualizer.h/cpp：50+82 行（独立 GUI 工作线程）
+• time_manager.h/cpp：54+134 行
+• logger.h/cpp：31+38 行（日志过滤）
+• waypoint.h：33 行（Waypoint 结构体）
+• 单元测试（test/ 目录，7 个目标、40 个 GTest 用例；CTest 汇总 47 条记录）
+• 总计：~7200 行
+• 类数量：19 个
+• 定时器数量：5 个
+• 话题订阅：5 个
+• 话题发布：2 个
+• 测试套件：7 个
+• D2C2 训练脚本（train_yolov5.py）：230 行
+• 配置文件（game_config.yaml）：267 行
+
+8.4 依赖包列表
+-----------------
+ROS2 依赖：
+• rclcpp
+• geometry_msgs
+• sensor_msgs
+• std_msgs
+• cv_bridge
+
+系统依赖：
+• OpenCV 4.5+
+• TensorRT 10.x
+• CUDA 12.x
+• cuDNN 8.x
+• yaml-cpp 0.7+
+
+测试依赖：
+• ament_cmake_gtest（colcon test 时自动引入）
+• GTest（ROS2 Humble 自带 GoogleTest vendor 包）
+
+D2C2 训练依赖：
+• PyTorch 2.1+
+• torchvision
+• pycocotools
+• onnx
+• ultralytics

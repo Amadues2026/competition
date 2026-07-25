@@ -1,0 +1,60 @@
+---
+BasedOnStyle: Google
+Language: Cpp
+Standard: c++17
+
+IndentWidth: 4
+TabWidth: 4
+UseTab: Never
+ContinuationIndentWidth: 4
+AccessModifierOffset: -4
+
+BreakBeforeBraces: Attach
+
+PointerAlignment: Left
+DerivePointerAlignment: false
+
+MaxEmptyLinesToKeep: 2
+KeepEmptyLinesAtTheStartOfBlocks: false
+
+AlignAfterOpenBracket: Align
+AlignConsecutiveAssignments: false
+AlignConsecutiveDeclarations: false
+AlignOperands: true
+AlignTrailingComments: true
+
+ColumnLimit: 120
+BinPackArguments: true
+BinPackParameters: true
+AllowAllParametersOfDeclarationOnNextLine: true
+
+SpaceAfterCStyleCast: false
+SpaceBeforeAssignmentOperators: true
+SpaceBeforeParens: ControlStatements
+SpaceInEmptyParentheses: false
+SpacesInParentheses: false
+SpacesInSquareBrackets: false
+
+# include 排序与 CODING_STYLE.md 一致。
+# .cpp 对应的同名头文件由 clang-format 自动放在最前（Category 0）。
+SortIncludes: true
+IncludeBlocks: Regroup
+IncludeCategories:
+  # TensorRT / CUDA / yaml-cpp / GTest 等第三方库
+  - Regex: '^<(NvInfer.*|cuda.*|yaml-cpp/.*|gtest/.*)>'
+    Priority: 1
+  # C++ 标准库（项目当前使用集合）
+  - Regex: '^<(algorithm|atomic|chrono|cmath|condition_variable|cstddef|cstdint|deque|fstream|functional|iostream|limits|memory|mutex|numeric|stack|stdexcept|string|thread|tuple|type_traits|unordered_map|utility|vector)>$'
+    Priority: 2
+  # ROS2 核心、消息和 cv_bridge（兼容尖括号/引号两种写法）
+  - Regex: '^[<"](ament_index_cpp|cv_bridge|geometry_msgs|rclcpp|sensor_msgs|std_msgs|tdt_interface)/'
+    Priority: 3
+  # OpenCV
+  - Regex: '^<opencv2/'
+    Priority: 4
+  # 其他本地头文件
+  - Regex: '^".*"$'
+    Priority: 5
+  # 未枚举的尖括号依赖按第三方库处理
+  - Regex: '^<.*>$'
+    Priority: 1
