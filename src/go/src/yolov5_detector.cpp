@@ -333,7 +333,7 @@ void YOLOv5Detector::initTensorRT() {
     size_t output_size = output_dim1_ * output_dim2_ * sizeof(float);
     err = cudaMalloc(&gpu_buffers_[1], output_size);
     if (err != cudaSuccess) {
-        cudaFree(gpu_buffers_[0]);
+        // The constructor catch block releases all successfully allocated buffers.
         throw std::runtime_error("CUDA malloc output failed");
     }
 

@@ -3,7 +3,7 @@
 <package format="3">
   <name>tdt_interface</name>
   <version>0.0.1</version>
-  <description>tdt.</description>
+  <description>ROS2 simulator messages for robot angle feedback and control commands.</description>
   <maintainer email="zhujunheng2005@163.com">zhujunheng</maintainer>
   <license>Apache-2.0</license>
 

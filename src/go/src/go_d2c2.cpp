@@ -1,30 +1,12 @@
 /**
  * @file go_d2c2.cpp
- * @brief 程序主入口 —— 解析命令行参数，创建 GoNode 并启动 ROS2 事件循环
+ * @brief ROS2 executable entry point for the competition controller.
  *
- * 这是控制系统的可执行入口点（对应 CMakeLists.txt 中的 go_d2c2 target）。
- * 负责参数解析、错误处理、ROS2 生命周期管理。
- *
- * 使用方式：
- *   ros2 run go go_d2c2 <player_id> [test_waypoint_idx]
- *
- * 参数：
- *   player_id          必填，1=蓝方，2=红方
- *   test_waypoint_idx  可选，测试模式下的射击路径点编号（1-11）
- *                      -1=正常模式（所有射击点都生效）
- *                      指定后仅该点为射击点，用于单点调试
- *
- * 执行流程：
- *   1. rclcpp::init() 初始化 ROS2 通信
- *   2. 解析 argv 获取 player_id 和 test_waypoint_idx
- *   3. 创建 GoNode（内部完成所有模块初始化）
- *   4. MultiThreadedExecutor(2) 进入事件循环，5ms 控制循环独占一线程
- *   5. spin 返回后（如 ctrl+c 或 game_over_ 触发 shutdown）调用 rclcpp::shutdown()
- *
- * 错误处理：
- *   - 参数缺失/非法 → 打印用法提示后退出（return 1）
- *   - GoNode 构造异常 → 打印 Fatal 日志后关闭 ROS2（return 1）
- *   - spin 正常返回 → 正常退出（return 0）
+ * Run: ros2 run go S_d2c2 <player_id> [test_waypoint_idx] --ros-args
+ *        -p engine_path:=/absolute/path/to/model.engine
+ * Player 1 selects blue; player 2 selects red. The optional one-based waypoint
+ * index restricts simulator firing tasks to one waypoint; -1 selects normal mode.
+ * GoNode assembles modules and callbacks; a two-thread executor handles ROS2 work.
  */
 
 #include <iostream>

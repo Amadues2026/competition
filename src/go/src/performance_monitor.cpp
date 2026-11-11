@@ -179,13 +179,13 @@ void PerformanceMonitor::reportAll() {
             }
         }
     }
-    RCLCPP_INFO(logger_, "========== 性能监控报告 ==========");
+    RCLCPP_INFO(logger_, "========== Performance report ==========");
     for (const auto& name : empty_metrics) {
-        RCLCPP_INFO(logger_, "%s: 无数据", name.c_str());
+        RCLCPP_INFO(logger_, "%s: no samples", name.c_str());
     }
     for (const auto& m : snapshots) {
         RCLCPP_INFO(logger_,
-                   "%s: avg=%.2fms, min=%.2fms, max=%.2fms, std=%.2fms (采样: %zu)",
+                   "%s: avg=%.2fms, min=%.2fms, max=%.2fms, std=%.2fms (samples: %zu)",
                    m.name.c_str(),
                    m.avg_ms,
                    m.min_ms,

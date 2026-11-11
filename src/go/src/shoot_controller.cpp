@@ -42,7 +42,7 @@ void ShootController::startShooting(int initial_health, rclcpp::Time current_tim
     aim_mode_ = AimMode::AUTO;
     consecutive_miss_count_for_disable_ = 0;
     consecutive_miss_count_for_swing_ = 0;
-    RCLCPP_INFO(logger_, "启用自瞄，初始血量: %d", initial_health);
+    RCLCPP_INFO(logger_, "Automatic aiming enabled; initial simulator health: %d", initial_health);
 }
 
 /**

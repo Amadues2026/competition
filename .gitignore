@@ -1,29 +1,29 @@
-# 构建产物
+# Build output
 build/
 install/
 log/
 Testing/
 
-# 大数据库文件（D2C2 数据集）
+# Local datasets
 D2C2/datasets/
 
-# D2C2 训练产物
+# Training output
 D2C2/train/runs/
 D2C2/train/yolo_output/
 
-# 备份文件
+# Backups
 *.bak
 
-# 编译和临时文件
+# Compiled and temporary files
 *.pyc
 __pycache__/
 *.o
 *.so
 
-# IDE 配置
+# Editor settings
 .vscode/
 
-# 操作系统和编辑器文件
+# OS and editor files
 .DS_Store
 *.swp
 *.swo

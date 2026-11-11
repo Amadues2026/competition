@@ -133,7 +133,7 @@ void CombatManager::shootLoop() {
     detector_.cacheDetections(armors.empty() ? std::vector<DetectedArmor>{} : std::vector<DetectedArmor>{armors[0]});
 
     if (config_.combat_debug_log_interval > 0 && ++detect_debug_count_ % config_.combat_debug_log_interval == 0) {
-        RCLCPP_DEBUG(logger_, "检测到 %zu 个目标", armors.size());
+        RCLCPP_DEBUG(logger_, "Detected %zu targets", armors.size());
     }
 
     // ── Step 4: 跟踪状态机 ──
@@ -144,7 +144,7 @@ void CombatManager::shootLoop() {
     TrackingState curr_state = tracking_sm_.state();
     if (prev_state != curr_state) {
         static const char* state_names[] = {"LOST", "DETECTING", "TRACKING", "TEMP_LOST"};
-        RCLCPP_DEBUG(logger_, "跟踪状态: %s → %s", state_names[static_cast<int>(prev_state)],
+        RCLCPP_DEBUG(logger_, "Tracking state: %s -> %s", state_names[static_cast<int>(prev_state)],
                      state_names[static_cast<int>(curr_state)]);
     }
 
@@ -158,7 +158,7 @@ void CombatManager::shootLoop() {
             // 连续失败超过阈值 → 降级到硬编码角度，放弃自瞄
             if (ctx_.detection_fail_count >= config_.detection_fail_max) {
                 if (!degradation_warned_) {
-                    RCLCPP_WARN(logger_, "连续检测失败%d次，启用降级策略使用硬编码角度",
+                    RCLCPP_WARN(logger_, "Detection failed %d times; falling back to configured angles",
                                 ctx_.detection_fail_count.load());
                     degradation_warned_ = true;
                 }
@@ -262,7 +262,7 @@ void CombatManager::swingLoop() {
         ctx_.gimbal.value.current_pitch = target.pitch;
     }
 
-    RCLCPP_DEBUG(logger_, "P%zu: 发布射击命令", waypoint_idx + 1);
+    RCLCPP_DEBUG(logger_, "P%zu: publishing simulator fire command", waypoint_idx + 1);
     publishShootCommand(waypoint_idx, current_time);
 }
 

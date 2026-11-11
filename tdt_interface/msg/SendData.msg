@@ -1,3 +1,3 @@
-float32 yaw       # 底盘系的yaw
-float32 pitch    # 底盘系的pitch
-bool if_shoot          # 是否射击
+float32 yaw       # Yaw in the chassis frame
+float32 pitch    # Pitch in the chassis frame
+bool if_shoot          # Simulator fire command

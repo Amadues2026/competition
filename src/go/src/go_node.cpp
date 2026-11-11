@@ -74,20 +74,24 @@ GoNode::GoNode(int player_id, int test_waypoint_idx) : Node("go_node"), test_way
     // ── Step 1: 加载配置文件 ──
     std::string default_config_path = ament_index_cpp::get_package_share_directory("go") + "/config/game_config.yaml";
     this->declare_parameter<std::string>("config_path", default_config_path);
-    this->declare_parameter<std::string>("engine_path", "/home/robot/competition/models/yolov5n_d2c2_fp16.engine");
+    // Engine location must be supplied for the deployment machine.
+    this->declare_parameter<std::string>("engine_path", "");
     std::string config_path = this->get_parameter("config_path").as_string();
     std::string engine_path = this->get_parameter("engine_path").as_string();
+    if (engine_path.empty()) {
+        throw std::runtime_error("Set the engine_path ROS parameter to a compatible TensorRT engine");
+    }
 
     config_manager_ = std::make_unique<ConfigManager>();
     if (config_manager_->loadFromFile(config_path)) {
-        RCLCPP_INFO(this->get_logger(), "配置文件加载成功");
+        RCLCPP_INFO(this->get_logger(), "Configuration loaded successfully");
     } else {
-        throw std::runtime_error("配置文件加载失败：路径点没有代码后备值，无法安全启动");
+        throw std::runtime_error("Configuration failed to load; waypoints have no fallback values");
     }
 
     loadConfigParameters();
     if (!validateConfig()) {
-        throw std::runtime_error("配置验证失败，拒绝使用无效参数启动");
+        throw std::runtime_error("Configuration validation failed; refusing to start with invalid parameters");
     }
 
     // ── Step 2: 从 YAML 创建路径策略 ──
@@ -95,7 +99,7 @@ GoNode::GoNode(int player_id, int test_waypoint_idx) : Node("go_node"), test_way
     const auto& configured_waypoints = player_id == 1 ? game_config.player1_waypoints : game_config.player2_waypoints;
     const size_t expected_waypoint_count = waypoint_utils::kBaseWaypointEnd + 1;
     if (configured_waypoints.size() != expected_waypoint_count) {
-        throw std::runtime_error("当前导航和敌方映射要求每个阵营恰好配置 11 个路径点");
+        throw std::runtime_error("Navigation and opponent mapping require exactly 11 waypoints per team");
     }
     waypoints_ = configured_waypoints;  // 测试模式需要可修改副本
     strategy_ = PathStrategyFactory::createStrategy(waypoints_.size());
@@ -105,7 +109,7 @@ GoNode::GoNode(int player_id, int test_waypoint_idx) : Node("go_node"), test_way
         size_t idx = static_cast<size_t>(test_waypoint_idx_) - 1;
         if (idx < waypoints_.size()) {
             waypoints_[idx].has_shoot_task = true;
-            RCLCPP_INFO(this->get_logger(), "测试模式：仅P%d为射击点位", test_waypoint_idx_);
+            RCLCPP_INFO(this->get_logger(), "Test mode: only P%d has a simulator firing task", test_waypoint_idx_);
         }
     }
 
@@ -358,10 +362,10 @@ static bool validateField(T value, T min, T max, const char* name, const rclcpp:
 
     if (invalid) {
         if constexpr (std::is_same_v<T, int>) {
-            RCLCPP_ERROR(logger, "配置错误：%s = %d 超出范围 %c%d, %d]", name, value, include_min ? '[' : '(',
+            RCLCPP_ERROR(logger, "Configuration error: %s = %d outside range %c%d, %d]", name, value, include_min ? '[' : '(',
                          static_cast<int>(min), static_cast<int>(max));
         } else {
-            RCLCPP_ERROR(logger, "配置错误：%s = %.4g 超出范围 %c%.4g, %.4g] 或不是有限数", name,
+            RCLCPP_ERROR(logger, "Configuration error: %s = %.4g outside range %c%.4g, %.4g] or nonfinite", name,
                          static_cast<double>(value), include_min ? '[' : '(', static_cast<double>(min),
                          static_cast<double>(max));
         }
@@ -412,7 +416,7 @@ bool GoNode::validateConfig() {
     is_valid &= validateField(config_.distance_gate_max, 0.0, 1000.0, "distance_gate_max", logger);
     is_valid &= validateField(config_.distance_gate_acceptance, 0.0, 1000.0, "distance_gate_acceptance", logger, true);
     if (config_.default_detection_distance > config_.distance_gate_max) {
-        RCLCPP_ERROR(logger, "配置错误：default_detection_distance 不能大于 distance_gate_max");
+        RCLCPP_ERROR(logger, "Configuration error: default_detection_distance exceeds distance_gate_max");
         is_valid = false;
     }
 
@@ -460,7 +464,7 @@ bool GoNode::validateConfig() {
     is_valid &=
         validateField(config_.waypoint_health_ratio_escape, 0.0, 1.0, "waypoint_health_ratio_escape", logger, true);
     if (config_.combat_ekf_max_dt < config_.combat_ekf_default_dt) {
-        RCLCPP_ERROR(logger, "配置错误：combat_ekf_max_dt 不能小于 combat_ekf_default_dt");
+        RCLCPP_ERROR(logger, "Configuration error: combat_ekf_max_dt is below combat_ekf_default_dt");
         is_valid = false;
     }
 
@@ -484,9 +488,9 @@ bool GoNode::validateConfig() {
     is_valid &= validateField(raw.filter.distance_window, 0, 100000, "filter.distance_window", logger);
 
     if (is_valid) {
-        RCLCPP_INFO(logger, "配置验证通过");
+        RCLCPP_INFO(logger, "Configuration validation passed");
     } else {
-        RCLCPP_ERROR(logger, "配置验证失败，请检查配置文件");
+        RCLCPP_ERROR(logger, "Configuration validation failed; check the configuration file");
     }
 
     return is_valid;
@@ -503,7 +507,7 @@ bool GoNode::validateConfig() {
  */
 void GoNode::positionCallback(const geometry_msgs::msg::PoseStamped::SharedPtr msg) {
     if (!msg) {
-        RCLCPP_ERROR(this->get_logger(), "位置消息为空");
+        RCLCPP_ERROR(this->get_logger(), "Position message is null");
         return;
     }
     data_manager_->updatePosition(msg->pose.position.x, msg->pose.position.y, msg->header.stamp);
@@ -517,7 +521,7 @@ void GoNode::positionCallback(const geometry_msgs::msg::PoseStamped::SharedPtr m
  */
 void GoNode::anglesCallback(const tdt_interface::msg::ReceiveData::SharedPtr msg) {
     if (!msg) {
-        RCLCPP_ERROR(this->get_logger(), "角度消息为空");
+        RCLCPP_ERROR(this->get_logger(), "Angle message is null");
         return;
     }
     {
@@ -548,7 +552,7 @@ void GoNode::anglesCallback(const tdt_interface::msg::ReceiveData::SharedPtr msg
  */
 void GoNode::healthCallback(const std_msgs::msg::Int32MultiArray::SharedPtr msg) {
     if (!msg) {
-        RCLCPP_ERROR(this->get_logger(), "血量消息为空");
+        RCLCPP_ERROR(this->get_logger(), "Health message is null");
         return;
     }
     auto current_time = TimeManager::getCurrentTime();
@@ -591,7 +595,7 @@ void GoNode::checkBaseDestroyed(size_t enemy_internal_index, int enemy_health) {
     bool health_initialized = data_manager_->isEnemyHealthInitialized(base_internal_index);
 
     if (index_valid && is_base_target && is_destroyed && health_initialized) {
-        RCLCPP_FATAL(this->get_logger(), "基地被摧毁！游戏结束！");
+        RCLCPP_FATAL(this->get_logger(), "Base destroyed; game over");
         game_over_ = true;
     }
 }
@@ -610,16 +614,16 @@ void GoNode::checkBaseDestroyed(size_t enemy_internal_index, int enemy_health) {
 void GoNode::cameraCallback(const sensor_msgs::msg::Image::SharedPtr msg) {
     try {
         if (!msg) {
-            RCLCPP_ERROR(this->get_logger(), "相机消息为空");
+            RCLCPP_ERROR(this->get_logger(), "Camera message is null");
             return;
         }
         cv_bridge::CvImagePtr cv_ptr = cv_bridge::toCvCopy(msg, "bgr8");
         if (cv_ptr->image.empty()) {
-            RCLCPP_ERROR(this->get_logger(), "图像为空");
+            RCLCPP_ERROR(this->get_logger(), "Image is empty");
             return;
         }
         if (cv_ptr->image.cols <= 0 || cv_ptr->image.rows <= 0) {
-            RCLCPP_ERROR(this->get_logger(), "图像尺寸无效: %dx%d", cv_ptr->image.cols, cv_ptr->image.rows);
+            RCLCPP_ERROR(this->get_logger(), "Invalid image dimensions: %dx%d", cv_ptr->image.cols, cv_ptr->image.rows);
             return;
         }
         yolov5_detector_->updateFrame(cv_ptr->image);
@@ -629,9 +633,9 @@ void GoNode::cameraCallback(const sensor_msgs::msg::Image::SharedPtr msg) {
     } catch (cv_bridge::Exception& e) {
         RCLCPP_ERROR(this->get_logger(), "cv_bridge exception: %s", e.what());
     } catch (const std::exception& e) {
-        RCLCPP_ERROR(this->get_logger(), "相机回调异常: %s", e.what());
+        RCLCPP_ERROR(this->get_logger(), "Camera callback exception: %s", e.what());
     } catch (...) {
-        RCLCPP_ERROR(this->get_logger(), "相机回调未知异常");
+        RCLCPP_ERROR(this->get_logger(), "Unknown camera callback exception");
     }
 }
 
@@ -641,7 +645,7 @@ void GoNode::cameraCallback(const sensor_msgs::msg::Image::SharedPtr msg) {
  */
 void GoNode::gameTimeCallback(const std_msgs::msg::Int32::SharedPtr msg) {
     if (!msg) {
-        RCLCPP_ERROR(this->get_logger(), "游戏时间消息为空");
+        RCLCPP_ERROR(this->get_logger(), "Game-time message is null");
         return;
     }
     TimeManager::updateGameTime(msg->data);

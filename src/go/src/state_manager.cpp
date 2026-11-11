@@ -106,7 +106,7 @@ void StateManager::evaluateHealthAndAutoAim(size_t waypoint_idx, rclcpp::Time cu
         enemy_health_valid = data_manager_.isEnemyHealthInitialized(enemy_internal_index);
     }
 
-    RCLCPP_INFO(logger_, "P%zu: 血量变化=%d, 阈值=%d, 连续未达标=%d", waypoint_idx + 1, health_change,
+    RCLCPP_INFO(logger_, "P%zu: health change=%d, threshold=%d, consecutive misses=%d", waypoint_idx + 1, health_change,
                 health_change_threshold, shoot_controller_.getConsecutiveMissCountForSwing());
 
     // ── Step 2: 评估命中 ──
@@ -114,21 +114,21 @@ void StateManager::evaluateHealthAndAutoAim(size_t waypoint_idx, rclcpp::Time cu
     // health_change ≥ threshold → 未命中，累加 miss 计数
     bool health_changed = shoot_controller_.checkHealthChange(health_change, health_change_threshold, current_time);
     if (health_changed) {
-        RCLCPP_INFO(logger_, "P%zu: 血量变化达到明显标准，重置计数", waypoint_idx + 1);
+        RCLCPP_INFO(logger_, "P%zu: health change reached threshold; resetting counter", waypoint_idx + 1);
     }
 
     // ── Step 3: 自瞄禁用判定（AUTO → HARDCODE）──
     // 连续 miss 达到 disable 阈值（默认10次），自瞄无法打中目标
     if (shoot_controller_.shouldDisableAutoAim(current_time)) {
         shoot_controller_.disableAutoAim();
-        RCLCPP_INFO(logger_, "P%zu: 禁用自瞄，切换到硬编码", waypoint_idx + 1);
+        RCLCPP_INFO(logger_, "P%zu: disabling automatic aiming; using configured angles", waypoint_idx + 1);
     }
 
     // ── Step 4: 摆动触发判定（HARDCODE → SWING）──
     // 硬编码角度也打不中时，开始左右摆动扫描
     if (shoot_controller_.shouldStartSwinging(current_time)) {
         shoot_controller_.startSwinging(current_time);
-        RCLCPP_INFO(logger_, "P%zu: 连续未达标触发摆动", waypoint_idx + 1);
+        RCLCPP_INFO(logger_, "P%zu: consecutive misses triggered sweep mode", waypoint_idx + 1);
     }
 
     // ── Step 5: 摆动期间命中处理（SWING → HARDCODE）──
@@ -142,14 +142,14 @@ void StateManager::evaluateHealthAndAutoAim(size_t waypoint_idx, rclcpp::Time cu
             std::lock_guard<std::mutex> lock(ctx_.gimbal.mutex);
             ctx_.gimbal.value.current_yaw = prev_yaw;
         }
-        RCLCPP_INFO(logger_, "P%zu: 检测到血量变化，停止摆动，调整yaw到前一秒数值", waypoint_idx + 1);
+        RCLCPP_INFO(logger_, "P%zu: health change detected; stopping sweep and restoring previous yaw", waypoint_idx + 1);
     }
 
     // ── Step 6: 自身被攻击检测 ──
     // self_health_change < 0 表示自身在掉血（被敌方攻击）
     int self_health_change = data_manager_.getSelfHealthChange();
     if (self_health_change < 0 && enemy_health_valid && initial_enemy_health > 0) {
-        RCLCPP_INFO(logger_, "P%zu: 检测到自身血量减少%d，被攻击", waypoint_idx + 1, self_health_change);
+        RCLCPP_INFO(logger_, "P%zu: own health decreased by %d; under attack", waypoint_idx + 1, self_health_change);
         handleSelfUnderAttack(waypoint_idx, current_enemy_health, initial_enemy_health);
     }
 
@@ -173,7 +173,7 @@ void StateManager::evaluateHealthAndAutoAim(size_t waypoint_idx, rclcpp::Time cu
  *   - 导航到下一个路径点
  */
 void StateManager::handleKilledEnemy(size_t waypoint_idx, rclcpp::Time current_time) {
-    RCLCPP_INFO(logger_, "P%zu: 敌人击杀，状态转换 SHOOTING -> MOVING", waypoint_idx + 1);
+    RCLCPP_INFO(logger_, "P%zu: opponent eliminated; state transition SHOOTING -> MOVING", waypoint_idx + 1);
     shoot_controller_.stopShooting();
     {
         std::lock_guard<std::mutex> lock(ctx_.chassis.mutex);
@@ -201,12 +201,12 @@ void StateManager::handleKilledEnemy(size_t waypoint_idx, rclcpp::Time current_t
 
         publishAngleCommand(yaw, pitch, false);
 
-        RCLCPP_INFO(logger_, "P%zu: 目标被摧毁，调整yaw/pitch到P%zu（%.1f, %.1f）", waypoint_idx + 1, next_idx + 1,
+        RCLCPP_INFO(logger_, "P%zu: target destroyed; setting yaw/pitch for P%zu (%.1f, %.1f)", waypoint_idx + 1, next_idx + 1,
                     ctx_.target_yaw.load(), ctx_.target_pitch.load());
     }
 
     path_navigator_.moveToNext(current_time);
-    RCLCPP_INFO(logger_, "P%zu: 目标被摧毁，前往下一点", waypoint_idx + 1);
+    RCLCPP_INFO(logger_, "P%zu: target destroyed; moving to next waypoint", waypoint_idx + 1);
 }
 
 
@@ -269,7 +269,7 @@ void StateManager::handleSelfUnderAttack(size_t waypoint_idx, int current_enemy_
             next_shoot_idx = kBaseLoopStart;  // P11之后回到P7
         }
 
-        RCLCPP_INFO(logger_, "P%zu: 被攻击，立即前往下一点位P%zu", waypoint_idx + 1, next_shoot_idx + 1);
+        RCLCPP_INFO(logger_, "P%zu: under attack; moving immediately to P%zu", waypoint_idx + 1, next_shoot_idx + 1);
 
         shoot_controller_.stopShooting();
         {
@@ -292,7 +292,7 @@ void StateManager::handleSelfUnderAttack(size_t waypoint_idx, int current_enemy_
 
     // 目标血量不足20% → 优先击杀，不撤退
     if (health_ratio <= config_.waypoint_health_ratio_escape) {
-        RCLCPP_INFO(logger_, "P%zu: 被攻击，但目标血量不足20%%(%.1f%%)，继续打击任务", waypoint_idx + 1,
+        RCLCPP_INFO(logger_, "P%zu: under attack but target health is below 20%% (%.1f%%); continuing task", waypoint_idx + 1,
                     health_ratio * 100);
         return;
     }
@@ -304,7 +304,7 @@ void StateManager::handleSelfUnderAttack(size_t waypoint_idx, int current_enemy_
         next_shoot_idx = kFirstShootWaypointIndex;  // 防止找不到下一个射击点
     }
 
-    RCLCPP_INFO(logger_, "P%zu: 被攻击，目标血量%.1f%%，前往下一射击任务点P%zu", waypoint_idx + 1, health_ratio * 100,
+    RCLCPP_INFO(logger_, "P%zu: under attack, target health %.1f%%; moving to task waypoint P%zu", waypoint_idx + 1, health_ratio * 100,
                 next_shoot_idx + 1);
 
     // 压栈：记录被打断的位置，以便后续可能返回
@@ -330,6 +330,6 @@ void StateManager::publishAngleCommand(double yaw, double pitch, bool if_shoot) 
 }
 
 void StateManager::moveToWaypoint(size_t waypoint_idx, rclcpp::Time current_time) {
-    RCLCPP_INFO(logger_, "开始导航到 P%zu", waypoint_idx + 1);
+    RCLCPP_INFO(logger_, "Starting navigation to P%zu", waypoint_idx + 1);
     path_navigator_.navigateToWaypoint(waypoint_idx, current_time);
 }

@@ -121,14 +121,14 @@ bool ConfigManager::loadFromFile(const std::string& config_path) {
         config_.combat = parseCombatConfig(config["combat"]);
         config_.waypoint = parseWaypointConfig(config["waypoint"]);
         loaded_ = true;
-        std::cout << "配置文件加载成功: " << config_path << std::endl;
+        std::cout << "Configuration loaded: " << config_path << std::endl;
         return true;
 
     } catch (const YAML::Exception& e) {
-        std::cerr << "YAML解析错误: " << e.what() << std::endl;
+        std::cerr << "YAML parsing error: " << e.what() << std::endl;
         return false;
     } catch (const std::exception& e) {
-        std::cerr << "配置加载错误: " << e.what() << std::endl;
+        std::cerr << "Configuration loading error: " << e.what() << std::endl;
         return false;
     }
 }
@@ -137,14 +137,14 @@ namespace {
 
 std::vector<Waypoint> parseWaypoints(const YAML::Node& node, const char* name) {
     if (!node.IsSequence() || node.size() == 0) {
-        throw std::runtime_error(std::string(name) + " 必须是非空路径点序列");
+        throw std::runtime_error(std::string(name) + " must be a nonempty waypoint sequence");
     }
 
     std::vector<Waypoint> waypoints;
     waypoints.reserve(node.size());
     for (const auto& item : node) {
         if (!item.IsMap()) {
-            throw std::runtime_error(std::string(name) + " 中的路径点必须是映射");
+            throw std::runtime_error(std::string(name) + " waypoints must be mappings");
         }
         waypoints.push_back({item["x"].as<double>(), item["y"].as<double>(), item["yaw"].as<double>(),
                              item["pitch"].as<double>(), item["has_shoot_task"].as<bool>()});
@@ -169,7 +169,7 @@ std::vector<Waypoint> parseWaypoints(const YAML::Node& node, const char* name) {
 std::unordered_map<std::string, int> parseHealthThresholds(const YAML::Node& node) {
     std::unordered_map<std::string, int> thresholds;
     if (!node.IsMap()) {
-        throw std::runtime_error("血量阈值配置必须是映射");
+        throw std::runtime_error("Health thresholds must be a mapping");
     }
     for (const auto& kv : node) {
         std::string key = kv.first.as<std::string>();

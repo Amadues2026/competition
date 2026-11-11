@@ -91,7 +91,7 @@ void PathNavigator::moveToNext(rclcpp::Time current_time) {
         current_target_index_ = return_to_index_;
         is_returning_ = false;
         return_to_index_ = 0;
-        RCLCPP_DEBUG(rclcpp::get_logger("PathNavigator"), "返回到索引%zu", current_target_index_);
+        RCLCPP_DEBUG(rclcpp::get_logger("PathNavigator"), "Returning to index %zu", current_target_index_);
         return;
     }
 
@@ -153,7 +153,7 @@ void PathNavigator::cancelReturn() {
     std::lock_guard<std::mutex> lock(mutex_);
     is_returning_ = false;
     return_to_index_ = 0;
-    RCLCPP_DEBUG(rclcpp::get_logger("PathNavigator"), "取消返回状态");
+    RCLCPP_DEBUG(rclcpp::get_logger("PathNavigator"), "Clearing return state");
 }
 
 /**

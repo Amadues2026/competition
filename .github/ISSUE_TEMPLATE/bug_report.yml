@@ -1,0 +1,23 @@
+name: Bug report
+description: Report a reproducible defect in the controller or tools.
+body:
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: Commit, OS, ROS2, compiler, and CUDA/TensorRT versions if relevant.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Reproduction
+      description: Commands, configuration differences, expected and actual behavior.
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant logs
+      description: Remove credentials and private information before sharing.
+      render: text

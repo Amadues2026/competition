@@ -75,10 +75,10 @@ bool MovementController::handleTimeoutRetry(size_t waypoint_idx, rclcpp::Time cu
 
     path_navigator_.incrementRetryCount(current_time);
     if (path_navigator_.isMaxRetriesExceeded()) {
-        RCLCPP_INFO(logger_, "P%zu: 3次尝试失败，跳过该点位", waypoint_idx + 1);
+        RCLCPP_INFO(logger_, "P%zu: three attempts failed; skipping waypoint", waypoint_idx + 1);
         path_navigator_.skipCurrentPoint(current_time);
     } else {
-        RCLCPP_INFO(logger_, "P%zu: 超时，返回上一位点（重试%d/3）", waypoint_idx + 1, path_navigator_.getRetryCount());
+        RCLCPP_INFO(logger_, "P%zu: timeout; returning to previous waypoint (retry %d/3)", waypoint_idx + 1, path_navigator_.getRetryCount());
         path_navigator_.markReturnToPrevious();
     }
     return true;
@@ -105,7 +105,7 @@ bool MovementController::handleShootingDrift(size_t waypoint_idx, double distanc
             return false;
     }
 
-    RCLCPP_INFO(logger_, "P%zu: SHOOTING状态下被推得太远（%.2f），切换到MOVING状态重新导航", waypoint_idx + 1,
+    RCLCPP_INFO(logger_, "P%zu: excessive drift while SHOOTING (%.2f); switching to MOVING", waypoint_idx + 1,
                 distance);
     shoot_controller_.stopShooting();
     {
@@ -143,14 +143,14 @@ bool MovementController::tryStartShooting(size_t waypoint_idx, const Waypoint& t
             }
             ctx_.chassis.value.is_under_attack = false;
             ctx_.chassis.value.attack_waypoint_stack.pop();
-            RCLCPP_INFO(logger_, "P%zu: 自身血量不再减少，清除被攻击状态", waypoint_idx + 1);
+            RCLCPP_INFO(logger_, "P%zu: health is stable; clearing under-attack state", waypoint_idx + 1);
         }
         ctx_.chassis.value.state = SharedContext::SHOOTING;
     }
 
     // 停止底盘移动，准备射击
     publishVelocity(0.0, 0.0, current_time);
-    RCLCPP_INFO(logger_, "P%zu: 状态转换 MOVING -> SHOOTING", waypoint_idx + 1);
+    RCLCPP_INFO(logger_, "P%zu: state transition MOVING -> SHOOTING", waypoint_idx + 1);
 
     // 设置云台初始角度（gimbal_mutex 保护）
     {
@@ -170,7 +170,7 @@ bool MovementController::tryStartShooting(size_t waypoint_idx, const Waypoint& t
 
     ctx_.target_yaw = target.yaw;
     ctx_.target_pitch = target.pitch;
-    RCLCPP_INFO(logger_, "到达P%zu，开始射击任务", waypoint_idx + 1);
+    RCLCPP_INFO(logger_, "Reached P%zu; starting simulator firing task", waypoint_idx + 1);
     return false;
 }
 
@@ -197,7 +197,7 @@ void MovementController::advancePastWaypoint(size_t waypoint_idx, rclcpp::Time c
         }
         publishAngleCommand(yaw, pitch, false);
 
-        RCLCPP_INFO(logger_, "离开P%zu，调整yaw/pitch到P%zu（%.1f, %.1f）", waypoint_idx + 1, next_idx + 1,
+        RCLCPP_INFO(logger_, "Leaving P%zu; setting yaw/pitch for P%zu (%.1f, %.1f)", waypoint_idx + 1, next_idx + 1,
                     ctx_.target_yaw.load(), ctx_.target_pitch.load());
     }
     path_navigator_.moveToNext(current_time);
@@ -393,7 +393,7 @@ void MovementController::preciseAdjustment(double dx, double dy, double distance
 }
 
 void MovementController::moveToWaypoint(size_t waypoint_idx, rclcpp::Time current_time) {
-    RCLCPP_INFO(logger_, "开始导航到 P%zu", waypoint_idx + 1);
+    RCLCPP_INFO(logger_, "Starting navigation to P%zu", waypoint_idx + 1);
     path_navigator_.navigateToWaypoint(waypoint_idx, current_time);
 }
 

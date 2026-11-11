@@ -1,23 +1,34 @@
-cmake_minimum_required(VERSION 3.10)
+cmake_minimum_required(VERSION 3.18)
 project(go)
 
 set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+option(BUILD_RUNTIME "Build the ROS2 GPU runtime (disable for CPU-only tests)" ON)
 
-# 使用 ament_auto 自动管理依赖
+# Find ROS2 dependencies
 find_package(ament_cmake REQUIRED)
 find_package(rclcpp REQUIRED)
-find_package(geometry_msgs REQUIRED)
-find_package(tdt_interface REQUIRED)
-find_package(sensor_msgs REQUIRED)
-find_package(cv_bridge REQUIRED)
-find_package(ament_index_cpp REQUIRED)
+find_package(std_msgs REQUIRED)
+if(BUILD_RUNTIME)
+  find_package(geometry_msgs REQUIRED)
+  find_package(tdt_interface REQUIRED)
+  find_package(sensor_msgs REQUIRED)
+  find_package(cv_bridge REQUIRED)
+  find_package(ament_index_cpp REQUIRED)
+endif()
 
-# 查找第三方库
-find_package(OpenCV 4 REQUIRED COMPONENTS core imgproc imgcodecs highgui)
-find_package(CUDAToolkit REQUIRED)
+# Find third-party libraries
+if(BUILD_RUNTIME)
+  find_package(OpenCV 4 REQUIRED COMPONENTS core imgproc imgcodecs highgui calib3d)
+  find_package(CUDAToolkit REQUIRED)
+  find_path(TENSORRT_INCLUDE_DIR NvInfer.h REQUIRED)
+  find_library(TENSORRT_LIBRARY nvinfer REQUIRED)
+else()
+  find_package(OpenCV 4 REQUIRED COMPONENTS core)
+endif()
 find_package(yaml-cpp REQUIRED)
 
-# ── 源文件分组 ──
+# Source groups
 set(CORE_SOURCES
   src/go_d2c2.cpp
   src/go_node.cpp
@@ -56,7 +67,8 @@ set(DETECTION_SOURCES
   src/visualizer.cpp
 )
 
-# 添加可执行文件
+if(BUILD_RUNTIME)
+# Build the GPU runtime only when requested.
 add_executable(S_d2c2
   ${CORE_SOURCES}
   ${UTILITY_SOURCES}
@@ -66,9 +78,10 @@ add_executable(S_d2c2
   ${DETECTION_SOURCES}
 )
 
-# 添加ROS2依赖
+# ROS2 target dependencies
 ament_target_dependencies(S_d2c2
   rclcpp
+  std_msgs
   geometry_msgs
   tdt_interface
   sensor_msgs
@@ -76,35 +89,37 @@ ament_target_dependencies(S_d2c2
   ament_index_cpp
 )
 
-# OpenCV 头文件路径（非 target 接口的兼容处理）
+# Include directories for OpenCV and SDK headers
 target_include_directories(S_d2c2 PRIVATE
   ${OpenCV_INCLUDE_DIRS}
+  ${TENSORRT_INCLUDE_DIR}
   ${cv_bridge_INCLUDE_DIRS}
 )
 
-# 链接第三方库
+# Link third-party libraries
 target_link_libraries(S_d2c2
   ${OpenCV_LIBS}
   yaml-cpp
   CUDA::cudart
-  curl
-  nvinfer
+  ${TENSORRT_LIBRARY}
 )
 
-# ── 单元测试 ──
+endif()
+
+# Unit tests do not require a GPU or a TensorRT engine.
 if(BUILD_TESTING)
   find_package(ament_cmake_gtest REQUIRED)
 
-  # ── 测试分组 ──
+  # Test groups
 
-  # waypoint_utils（纯值对象输入，不依赖 YAML 解析器）
+  # Waypoint value objects and index helpers
   ament_add_gtest(test_waypoint_utils test/test_waypoint_utils.cpp
     src/waypoint_utils.cpp
     src/path_strategy.cpp
   )
   target_include_directories(test_waypoint_utils PRIVATE src)
 
-  # config_manager（验证 YAML 路径点和 EKF 参数解析）
+  # YAML waypoint and EKF configuration parsing
   ament_add_gtest(test_config_manager test/test_config_manager.cpp
     src/config_manager.cpp
     src/rolling_median_filter.cpp
@@ -115,21 +130,21 @@ if(BUILD_TESTING)
   )
   target_link_libraries(test_config_manager yaml-cpp)
 
-  # shoot_controller（验证摆动偏移始终限制在 YAML 默认范围内）
+  # Task-controller sweep bounds
   ament_add_gtest(test_shoot_controller test/test_shoot_controller.cpp
     src/shoot_controller.cpp
   )
   target_include_directories(test_shoot_controller PRIVATE src)
   ament_target_dependencies(test_shoot_controller rclcpp)
 
-  # time_manager（依赖 rclcpp::Time）
+  # TimeManager uses rclcpp::Time
   ament_add_gtest(test_time_manager test/test_time_manager.cpp
     src/time_manager.cpp
   )
   target_include_directories(test_time_manager PRIVATE src)
   ament_target_dependencies(test_time_manager rclcpp)
 
-  # data_manager（依赖 TimeManager + rclcpp::Time）
+  # DataManager uses TimeManager and rclcpp::Time
   ament_add_gtest(test_data_manager test/test_data_manager.cpp
     src/data_manager.cpp
     src/time_manager.cpp
@@ -137,7 +152,7 @@ if(BUILD_TESTING)
   target_include_directories(test_data_manager PRIVATE src)
   ament_target_dependencies(test_data_manager rclcpp)
 
-  # path_navigator（依赖 TimeManager + PathStrategy）
+  # PathNavigator uses TimeManager and PathStrategy
   ament_add_gtest(test_path_navigator test/test_path_navigator.cpp
     src/path_navigator.cpp
     src/path_strategy.cpp
@@ -146,18 +161,21 @@ if(BUILD_TESTING)
   target_include_directories(test_path_navigator PRIVATE src)
   ament_target_dependencies(test_path_navigator rclcpp)
 
-  # target_ekf（依赖 OpenCV 的 cv::Mat）
+  # TargetEKF uses OpenCV matrices
   ament_add_gtest(test_target_ekf test/test_target_ekf.cpp
     src/target_ekf.cpp
     src/general_kalman_filter.cpp
   )
   target_include_directories(test_target_ekf PRIVATE src)
+  target_include_directories(test_target_ekf PRIVATE ${OpenCV_INCLUDE_DIRS})
   target_link_libraries(test_target_ekf ${OpenCV_LIBS})
 endif()
 
-# 安装
-install(TARGETS S_d2c2 DESTINATION lib/${PROJECT_NAME})
+# Installation
+if(BUILD_RUNTIME)
+  install(TARGETS S_d2c2 DESTINATION lib/${PROJECT_NAME})
+endif()
 install(DIRECTORY config/ DESTINATION share/${PROJECT_NAME}/config)
 
-# ROS2包配置
+# ROS2 package metadata
 ament_package()
