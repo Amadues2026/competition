@@ -12,7 +12,7 @@ The repository is maintained by [Amadues2026](https://github.com/Amadues2026). I
 - TensorRT inference for a two-class red/blue armor detector.
 - Tracking, filtering, waypoint sequencing, configuration loading, and simulator task controllers.
 - YAML configuration with no duplicated hard-coded waypoint table.
-- Seven C++ test executables and a standard-library Python dataset test suite.
+- Eight C++ test executables and a standard-library Python dataset test suite.
 - Dataset conversion, disjoint train/validation lists, training, and explicit model export tools.
 
 ## Start here

@@ -110,6 +110,10 @@ endif()
 if(BUILD_TESTING)
   find_package(ament_cmake_gtest REQUIRED)
 
+  ament_add_gtest(test_cli_options test/test_cli_options.cpp)
+  target_include_directories(test_cli_options PRIVATE src)
+  ament_target_dependencies(test_cli_options rclcpp)
+
   # Test groups
 
   # Waypoint value objects and index helpers

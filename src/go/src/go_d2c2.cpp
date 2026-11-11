@@ -15,36 +15,26 @@
 #include <stdexcept>
 
 #include "rclcpp/rclcpp.hpp"
+#include "cli_options.h"
 #include "go_node.h"
 
 int main(int argc, char** argv) {
     rclcpp::init(argc, argv);
 
-    if (argc < 2) {
-        std::cerr << "Usage: " << argv[0] << " <player_id> [test_waypoint_idx]" << std::endl;
-        return 1;
-    }
-
-    int player_id = 0;
+    CliOptions options{};
     try {
-        player_id = std::stoi(argv[1]);
+        // ROS parameters and remapping flags are not positional application arguments.
+        options = parseCliOptions(rclcpp::remove_ros_arguments(argc, argv));
     } catch (const std::exception& e) {
-        std::cerr << "Invalid player_id argument: " << e.what() << std::endl;
+        std::cerr << "Invalid arguments: " << e.what() << "\nUsage: " << argv[0]
+                  << " <player_id> [test_waypoint_idx] --ros-args -p engine_path:=/path/to/model.engine"
+                  << std::endl;
+        rclcpp::shutdown();
         return 1;
     }
 
-    int test_waypoint_idx = -1;
-    if (argc >= 3) {
-        try {
-            test_waypoint_idx = std::stoi(argv[2]);
-        } catch (const std::exception& e) {
-            std::cerr << "Invalid test_waypoint_idx argument: " << e.what() << std::endl;
-            return 1;
-        }
-    }
-
     try {
-        auto node = std::make_shared<GoNode>(player_id, test_waypoint_idx);
+        auto node = std::make_shared<GoNode>(options.player_id, options.test_waypoint_idx);
         rclcpp::executors::MultiThreadedExecutor executor(rclcpp::ExecutorOptions(), 2);
         executor.add_node(node);
         executor.spin();

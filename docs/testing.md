@@ -29,6 +29,7 @@ colcon test-result --all --verbose
 
 | Executable | Main coverage |
 | --- | --- |
+| `test_cli_options` | Player/waypoint validation and ROS parameter separation. |
 | `test_waypoint_utils` | Health indices, waypoint mapping, thresholds, task lookup, path strategy. |
 | `test_config_manager` | YAML waypoint/parameter loading and median-window validation. |
 | `test_shoot_controller` | Simulator task state and bounded sweep offsets. |
